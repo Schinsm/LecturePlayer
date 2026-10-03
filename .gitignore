@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+.swiftpm/
+*.app/
+*.dSYM/
+*.zip
+*.log
+.env
+.env.*
+!.env.example
+Samples/LecturePlayer/
