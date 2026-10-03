@@ -26,14 +26,15 @@ final class MetadataCommitQueue: @unchecked Sendable {
             else if item is NSNull {result.removeValue(forKey:key)} else {result[key]=item}
         };return result
     }
-    func submit(old:Lecture,new:Lecture,completion:@escaping (String?)->Void) {
+    func submit(old:Lecture,new:Lecture,completion:@escaping (Error?)->Void) {
         queue.async { [self] in
             do {
                 let patch=Self.difference(try JSONSerialization.jsonObject(with:Codec.encode(old)),try JSONSerialization.jsonObject(with:Codec.encode(new)))
                 // Compose patches without dropping deletion markers.
                 pending[new.id]=Self.compose(pending[new.id] ?? [:],patch)
+                if let lastError {throw lastError}
                 try commit();lastError=nil;DispatchQueue.main.async{completion(nil)}
-            }catch{lastError=error;DispatchQueue.main.async{completion(error.localizedDescription)}}
+            }catch{lastError=error;DispatchQueue.main.async{completion(error)}}
         }
     }
     private static func compose(_ first:[String:Any],_ next:[String:Any])->[String:Any] {

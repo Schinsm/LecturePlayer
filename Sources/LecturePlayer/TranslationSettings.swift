@@ -190,7 +190,7 @@ struct Keychain {
                     if !saved.complete {onPause?();stopped=true;requestGate.setPaused(true);details=(done.result.problem ?? saved.transcript.attempts?.last?.outcome ?? "尚未完成")+"\n请求："+(done.result.requestID ?? "未记录");status="已保存 \(saved.saved) 条，本组还有 \(done.batch.targets.count-saved.saved) 条尚未完成。此前译文已保留。"}
                     else if !stopped && !pauseRequested {status="本课已译 \(saved.transcript.translatedCount)/\(saved.transcript.cues.count)"}
                     if completedRequests>=3 && !stopped && !pauseRequested {eta="预计还需约 \(max(1,Int(Date().timeIntervalSince(started)/Double(completedRequests)*Double(batches.count-completedRequests)/60))) 分钟"}
-                } catch {onPause?();stopped=true;status="保存未完成："+error.localizedDescription}
+                } catch {onPause?();stopped=true;store.storageFailed(error);status="资料库保存未完成："+StorageIssue(error).localizedDescription}
                 if stopped || pauseRequested {await store.requests.pause()}
                 if let lease=done.lease {await store.requests.release(lease)}
                 if !stopped && !pauseRequested {_ = dispatch()}

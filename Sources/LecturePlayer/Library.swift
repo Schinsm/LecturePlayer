@@ -27,6 +27,8 @@ import UniformTypeIdentifiers
     var unlinkedCount: Int { library.lectures.filter { $0.directoryPath == nil && $0.archived != true }.count }
     var fingerprints=MediaFingerprintCache()
     lazy var scanner = DirectoryScanner(cache:fingerprints); let directoryWatch = DirectoryWatch()
+    var fileSaveTasks:[UUID:Task<Void,Never>]=[:]
+    var fileSavePending:[UUID:Bool]=[:]
     var rescanRequested = false
     var scanTask: Task<Void, Never>?
     var rootGeneration = UUID()
@@ -52,7 +54,7 @@ import UniformTypeIdentifiers
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
             watchesEnabled = explicitRoot == nil && Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDisableAutomaticMaintenance") as? Bool != true
             fingerprints=MediaFingerprintCache(storage:root.appendingPathComponent("Cache/media-fingerprints.json"))
-            repository = try Repository(root: root); library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
+            repository = try Repository(root: root); repository?.onWriteFailure = {[weak self] in self?.storageFailed($0)}; library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
             let upgradeSnapshot = root.appendingPathComponent("before-v087.json")
             if !library.lectures.isEmpty, !FileManager.default.fileExists(atPath: upgradeSnapshot.path) { try repository!.writeRecoverySnapshot(library, to: upgradeSnapshot) }
             if watchesEnabled {
@@ -64,6 +66,7 @@ import UniformTypeIdentifiers
             captionPreferences.initialize(legacy:library.lectures.first{$0.id==library.lastLecture}?.videoCaptions)
             captions.save = { [weak self] _,value in self?.captionPreferences.save(value) }
             translation.restore(self);processing.restore(self)
+            Task { [weak self] in await self?.translation.writer.observeFailures { [weak self] _,error in self?.storageFailed(error) } }
             Task { [weak self] in await self?.translation.writer.observeFiles { [weak self] id,saved in
                 guard let self,let lesson=self.library.lectures.first(where:{$0.id==id}),lesson.transcriptVersion==saved.transcript.version else{return}
                 self.displayTranscript(saved.transcript,for:id)
@@ -85,15 +88,22 @@ import UniformTypeIdentifiers
         await translation.writer.flushFiles()
     }
     func perform(_ action: () throws -> Void) { do { try action() } catch { self.error = error.localizedDescription } }
-    func persist() { guard !fatal else { return }; perform { try repository?.save(library) } }
-    func flushMetadata() {readerPresentation.flush();perform {try repository?.commits.flush()}}
+    func storageFailed(_ failure:Error) {
+        if processing.running {processing.pause(self)}
+        translation.pause();analysis.pause()
+        Task {await requests.pause()}
+        error="资料保存失败，已停止新的翻译和总结请求；待保存内容已保留。"+StorageIssue(failure).localizedDescription
+        if let root=repository?.root {StorageDiagnostics.record(root:root,operation:.metadata,outcome:.failed,error:failure)}
+    }
+    func persist() {guard !fatal else{return};do {try repository?.save(library)}catch{storageFailed(error)}}
+    func flushMetadata() {readerPresentation.flush();do{try repository?.commits.flush()}catch{storageFailed(error)}}
     func updateLecture(_ id: UUID, quiet:Bool=false, _ action: (inout Lecture)->Void) {
         guard let i=library.lectures.firstIndex(where:{$0.id==id}) else{return}
         let old=library.lectures[i];var next=old;action(&next)
         guard old != next else{return}
         quietLibraryUpdate=quiet;library.lectures[i]=next;quietLibraryUpdate=false
         playlist.updateRow(next)
-        repository?.commits.submit(old:old,new:next) {[weak self] message in if let message {self?.error="设置暂未保存，可重试："+message}}
+        repository?.commits.submit(old:old,new:next) {[weak self] message in if let message {self?.storageFailed(message)}}
     }
     func open(_ id: UUID) {openLesson(id,autoplay:false,restart:false)}
     private func openLesson(_ id:UUID,autoplay:Bool,restart:Bool) {

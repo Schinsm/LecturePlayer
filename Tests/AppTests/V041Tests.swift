@@ -25,7 +25,7 @@ import SwiftData
         try store.saveTranscript(t, lectureID:library.lectures[0].id)
         #expect(try store.repository?.read(library.lectures[0])?.translations == t.translations)
         await store.saveVisibleTranslations(library.lectures[0].id)?.value
-        #expect(store.library.lectures[0].sidecarStatus?.contains("请定位") == true)
+        #expect(store.library.lectures[0].sidecarStatus?.contains("文件或目录不可用") == true)
         let subtitle = root.appendingPathComponent("original.vtt"); try t.original.write(to:subtitle)
         store.updateLecture(library.lectures[0].id) { $0.subtitlePath = subtitle.path }
         await store.saveVisibleTranslations(library.lectures[0].id)?.value

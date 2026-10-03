@@ -61,8 +61,9 @@ extension AppStore {
                     var item = next.lectures[i]; var sources = item.mediaSources
                     for j in sources.indices {
                         if let match = DirectoryIndex.match(sources[j], files: result.media) {
+                            let moved=sources[j].path != match.url.path || sources[j].identity != match.identity
                             sources[j].path = match.url.path; sources[j].identity = match.identity; sources[j].contentHash = match.hash
-                            sources[j].bookmark = try match.url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
+                            if moved || sources[j].bookmark == nil {sources[j].bookmark = try match.url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)}
                         }
                     }
                     item.mediaSources = sources
@@ -85,7 +86,8 @@ extension AppStore {
                     next.folders.removeAll { $0.directoryPath != nil && !paths.contains($0.directoryPath!) && !used.contains($0.id) }
                     next.courses.removeAll { course in course.directoryPath != nil && !paths.contains(course.directoryPath!) && !next.lectures.contains(where: { $0.courseID == course.id }) && !next.folders.contains(where: { $0.courseID == course.id }) }
                 }
-                try repository?.save(next); library = next
+                if next != library {try repository?.save(next); library = next}
+                if let root=repository?.root {StorageDiagnostics.record(root:root,operation:.scan,outcome:.unchanged,count:result.media.count)}
                 navigation.refreshAvailability();scanResult = result; scanConflicts = conflicts; scanIssues = result.issues
                 directoryFiles = result.files
                 let identities = Set(next.lectures.flatMap(\.mediaSources).map(\.identity))
@@ -98,7 +100,7 @@ extension AppStore {
                     selectedCourse = next.courses.first(where: { course in course.directoryPath.map { directory in visiblePath.map { DirectoryIndex.contains($0, in: directory) } ?? false } ?? false })?.id
                 }
                 if watchesEnabled && refreshPolicy == .automatic { directoryWatch.update([result.root, result.root.deletingLastPathComponent()] + result.directories) }
-                for item in library.lectures where item.subtitlePath != nil { saveVisibleTranslations(item.id) }
+                for item in library.lectures where item.subtitlePath != nil { saveVisibleTranslations(item.id,onlyIfNeeded:true) }
                 if result.unstable && refreshPolicy == .automatic { directoryWatch.schedule() }
             } catch is CancellationError { scanSummary = "扫描已取消；显示上次结果" }
             catch { scanSummary = "刷新失败；显示上次结果"; scanIssues = [error.localizedDescription] }
@@ -126,15 +128,25 @@ extension AppStore {
             updateLecture(id) { $0.subtitlePath = url.path }; saveVisibleTranslations(id)
         }
     }
-    @discardableResult func saveVisibleTranslations(_ id: UUID) -> Task<Void,Never>? {
-        guard let item=library.lectures.first(where:{$0.id==id}),let version=item.transcriptVersion,
-              let url=try? repository?.transcriptURL(id,version) else{return nil}
-        return Task {do {
-            let result=try await translation.writer.saveFiles(lesson:item,url:url)
-            guard library.lectures.first(where:{$0.id==id})?.transcriptVersion==version else{return}
-            displayTranscript(result.transcript,for:id)
-            updateLecture(id){$0.sidecars=result.sidecars;$0.sidecarStatus=result.fileStatus}
-        }catch{updateLecture(id){$0.sidecarStatus="译文已存资料库；文件待保存："+error.localizedDescription}}}
+    @discardableResult func saveVisibleTranslations(_ id: UUID,onlyIfNeeded:Bool=false) -> Task<Void,Never>? {
+        guard library.lectures.contains(where:{$0.id==id && $0.transcriptVersion != nil}) else{return nil}
+        fileSavePending[id]=(fileSavePending[id] ?? true) && onlyIfNeeded
+        if let task=fileSaveTasks[id] {return task}
+        let task=Task { [weak self] in
+            guard let self else{return}
+            defer{fileSaveTasks[id]=nil}
+            while let automatic=fileSavePending.removeValue(forKey:id) {
+                guard let item=library.lectures.first(where:{$0.id==id}),let version=item.transcriptVersion,
+                      let url=try? repository?.transcriptURL(id,version) else{continue}
+                do {
+                    let result=try await translation.writer.saveFiles(lesson:item,url:url,onlyIfNeeded:automatic)
+                    guard library.lectures.first(where:{$0.id==id})?.transcriptVersion==version else{continue}
+                    if current==id && transcript != result.transcript.viewing(item.selectedTranslationVariantID) {displayTranscript(result.transcript,for:id)}
+                    updateLecture(id){$0.sidecars=result.sidecars;$0.sidecarStatus=result.fileStatus}
+                }catch{storageFailed(error);fileSavePending[id]=nil;break}
+            }
+        }
+        fileSaveTasks[id]=task;return task
     }
 
 }
@@ -197,7 +209,7 @@ extension AppStore {
                 let matches = files.filter { ImportPlanner.subtitles.contains($0.pathExtension.lowercased()) && !ImportPlanner.isGenerated($0) }.filter { (try? Data(contentsOf: $0)).map(digest) == version }
                 if matches.count == 1 { updateLecture(item.id) { $0.subtitlePath = matches[0].path } }
             }
-            saveVisibleTranslations(item.id)
+            saveVisibleTranslations(item.id,onlyIfNeeded:true)
         }
     }
 }

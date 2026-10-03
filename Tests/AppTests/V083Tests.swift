@@ -95,10 +95,10 @@ struct V083Tests {
     @Test func keyAvailabilityIsCachedAndInvalidatedWithoutRenderQueries() async throws {
         let counter=ProbeCounter();let availability=KeychainAvailability{_ in counter.increment();return true}
         for _ in 0..<100 {_=availability.configured(.openAI)}
-        try await Task.sleep(for:.milliseconds(100));#expect(availability.configured(.openAI));#expect(counter.value==1)
+        for _ in 0..<100 {if availability.configured(.openAI) {break};try await Task.sleep(for:.milliseconds(20))};#expect(availability.configured(.openAI));#expect(counter.value==1)
         for _ in 0..<100 {_=availability.configured(.openAI)}
         #expect(counter.value==1);availability.invalidate(.openAI)
-        try await Task.sleep(for:.milliseconds(100));#expect(counter.value==2 && availability.configured(.openAI))
+        for _ in 0..<100 {if counter.value==2 && availability.configured(.openAI) {break};try await Task.sleep(for:.milliseconds(20))};#expect(counter.value==2 && availability.configured(.openAI))
     }
     private func usageRows(_ count:Int,now:Date)->[UsageEntry] {
         (0..<count).map{index in

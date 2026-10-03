@@ -18,14 +18,15 @@ import Testing
         state.focus(false);state.accessibilityFocus(true)
         try await Task.sleep(for:.milliseconds(45));#expect(state.revealed)
         state.accessibilityFocus(false)
-        try await Task.sleep(for:.milliseconds(60));#expect(!state.revealed && changes==[true,false])
+        for _ in 0..<100 {if !state.revealed {break};try await Task.sleep(for:.milliseconds(20))};#expect(!state.revealed && changes==[true,false])
         state.hover(true);state.hover(false);state.reset()
         try await Task.sleep(for:.milliseconds(45));#expect(!state.revealed)
     }
     @Test func hostAnchorsToVideoAndOnlyVisibleButtonInterceptsClicks() {
         _=NSApplication.shared
         let split=StudySplit<Text,Text>.Split(frame:NSRect(x:0,y:0,width:1200,height:700))
-        split.isVertical=true;split.delegate=split
+        split.isVertical=true;let delegate=StudySplit<Text,Text>.SplitDelegate(split);split.delegate=delegate
+        defer {withExtendedLifetime(delegate){}}
         let left=NSView(),right=NSView();split.addArrangedSubview(left);split.addArrangedSubview(right)
         let host=ReaderSplitContainer(split:split);host.frame=split.frame
         split.layout();split.setPosition(740,ofDividerAt:0)

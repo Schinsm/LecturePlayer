@@ -61,13 +61,22 @@ public enum DirectoryIndex {
 }
 
 public enum SidecarWriter {
+    public static func inputKey(_ t:Transcript,lesson:Lecture,hideSpeakers:Bool) throws -> String {
+        struct Input:Encodable {let version:String;let variant:String;let translations:[String:Translation];let marks:[Mark];let grouped:Bool;let hidden:Bool;let subtitle:String?;let destination:String?}
+        let media=lesson.mediaSources.first{$0.role == .screen} ?? (lesson.mediaSources.count==1 ? lesson.mediaSources.first : nil)
+        return digest(try Codec.encode(Input(version:t.version,variant:t.variantID,translations:t.translations,marks:lesson.marks,grouped:lesson.readingGrouped ?? true,hidden:hideSpeakers,subtitle:lesson.subtitlePath.map{URL(fileURLWithPath:$0).lastPathComponent},destination:media.map{URL(fileURLWithPath:$0.path).deletingLastPathComponent().path})))
+    }
     /// Only overwrites bytes previously written by us. Edited or unknown files get a new version.
     public static func write(_ transcript: Transcript, lesson: Lecture, beside subtitle: URL, hideSpeakers: Bool = false) throws -> [String: String] {
-        guard transcript.translatedCount > 0 else { return lesson.sidecars ?? [:] }
+        return try writeReport(transcript,lesson:lesson,beside:subtitle,hideSpeakers:hideSpeakers).files
+    }
+    public static func writeReport(_ transcript:Transcript,lesson:Lecture,beside subtitle:URL,hideSpeakers:Bool=false) throws -> SidecarWriteReport {
+        guard transcript.translatedCount > 0 else { return SidecarWriteReport(files:lesson.sidecars ?? [:],outcome:.unchanged) }
         guard let media=lesson.mediaSources.first(where:{$0.role == .screen}) ?? (lesson.mediaSources.count==1 ? lesson.mediaSources.first : nil) else{throw Failure("无法确定译文保存的视频目录")}
         let directory=URL(fileURLWithPath:media.path).deletingLastPathComponent()
         let stem = subtitle.deletingPathExtension().lastPathComponent + ".lectureplayer-" + lesson.id.uuidString.prefix(8) + "-" + transcript.version.prefix(8) + "." + transcript.variantID.lowercased()
         var results = (lesson.sidecars ?? [:]).filter { FileManager.default.fileExists(atPath: $0.key) }
+        var writes=0,bytes=0,conflict=false
         for (suffix, kind) in [("zh.vtt", ExportKind.chineseVTT), ("bilingual.md", .markdown)] {
             let data = try Exporter.render(transcript, kind: kind, translatedOnly: kind == .chineseVTT, marks: lesson.marks, hideSpeakers: hideSpeakers, grouped: lesson.readingGrouped ?? true)
             let desiredHash = digest(data)
@@ -75,15 +84,16 @@ public enum SidecarWriter {
             var target = base
             if let existing = try? Data(contentsOf: target) {
                 if digest(existing) == desiredHash { results[target.path] = desiredHash; continue }
-                if results[target.path] != digest(existing) { target = directory.appendingPathComponent(stem + "." + desiredHash.prefix(12) + "." + suffix) }
+                if results[target.path] != digest(existing) { conflict=true;target = directory.appendingPathComponent(stem + "." + desiredHash.prefix(12) + "." + suffix) }
             }
             if FileManager.default.fileExists(atPath: target.path) {
                 let existing = try Data(contentsOf: target)
-                guard digest(existing) == desiredHash || results[target.path] == digest(existing) else { throw Failure("译文文件已被修改，未覆盖：\(target.lastPathComponent)") }
+                guard digest(existing) == desiredHash || results[target.path] == digest(existing) else { throw StorageIssue(.conflict) }
+                if digest(existing)==desiredHash {results[target.path]=desiredHash;continue}
                 try data.write(to: target, options: .atomic)
             } else { try data.write(to: target, options: .withoutOverwriting) }
-            results[target.path] = desiredHash
+            writes += 1;bytes += data.count;results[target.path] = desiredHash
         }
-        return results
+        return SidecarWriteReport(files:results,outcome:conflict ? .conflict : (writes==0 ? .unchanged : .written),writes:writes,bytes:bytes)
     }
 }

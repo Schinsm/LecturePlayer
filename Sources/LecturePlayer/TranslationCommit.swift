@@ -6,12 +6,19 @@ enum TranscriptTransactions { static let lock=NSRecursiveLock() }
 struct TranslationCommit: Sendable {
     var transcript: Transcript; var complete: Bool; var saved: Int
     var sidecars: [String:String]?; var fileStatus: String
+    var fileOutcome:FileSaveOutcome = .unchanged
 }
 /// One actor owns background translation file transactions, including read/merge/write.
 actor TranslationWriter {
+    private let writeTranscript:@Sendable(Data,URL)throws->Void
+    private var blockedRecovery:[URL:String]=[:]
+    init(writeTranscript:@escaping @Sendable(Data,URL)throws->Void = {try $0.write(to:$1,options:.atomic)}) {self.writeTranscript=writeTranscript}
+
     private var pending:[URL:Lecture]=[:]
     private var pendingTimings:[URL:[UUID:Double]]=[:]
     private var scheduled:Task<Void,Never>?
+    var fileFailure:(@MainActor @Sendable (UUID,Error)->Void)?
+    func observeFailures(_ callback:@escaping @MainActor @Sendable(UUID,Error)->Void) {fileFailure=callback}
     var fileUpdate:(@MainActor @Sendable (UUID,TranslationCommit)->Void)?
     func observeFiles(_ callback:@escaping @MainActor @Sendable(UUID,TranslationCommit)->Void) {fileUpdate=callback}
     func enqueueFiles(_ lesson:Lecture,url:URL) {
@@ -24,35 +31,68 @@ actor TranslationWriter {
         let work=pending;pending=[:]
         for (url,lesson) in work {
             do {let result=try saveFiles(lesson:lesson,url:url);await fileUpdate?(lesson.id,result)}
-            catch {pending[url]=lesson} // Explicit file retry or next flush; never calls a service.
+            catch {await fileFailure?(lesson.id,error)} // Durable pending status remains; explicit retry only.
         }
     }
 
-    func saveFiles(lesson:Lecture,url:URL) throws -> TranslationCommit {
+    func saveFiles(lesson:Lecture,url:URL,onlyIfNeeded:Bool=false) throws -> TranslationCommit {
+        let t=try read(url)
+        let hidden=UserDefaults.standard.object(forKey:"hideSpeakerLabels") as? Bool ?? true
+        let key=try (t.variants ?? [:]).keys.sorted().map{try SidecarWriter.inputKey(t.viewing($0),lesson:lesson,hideSpeakers:hidden)}.joined(separator:":")
+        if onlyIfNeeded && blockedRecovery[url]==key {
+            return TranslationCommit(transcript:t,complete:false,saved:0,sidecars:lesson.sidecars,fileStatus:lesson.sidecarStatus ?? "文件待保存：资料库写入尚未成功，请重试保存。",fileOutcome:.failed)
+        }
+        do {let value=try performSaveFiles(lesson:lesson,url:url,onlyIfNeeded:onlyIfNeeded);blockedRecovery[url]=nil;return value}
+        catch {blockedRecovery[url]=key;throw error}
+    }
+    private func performSaveFiles(lesson:Lecture,url:URL,onlyIfNeeded:Bool) throws -> TranslationCommit {
         TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}
-        var t=try Codec.decode(Transcript.self,Data(contentsOf:url));try t.validate()
-        let started=Date()
-        for i in (t.attempts ?? []).indices {if let duration=pendingTimings[url]?[t.attempts![i].id] {t.attempts![i].databaseSeconds=duration}}
-        pendingTimings[url]=nil
+        let originalBytes=try Data(contentsOf:url)
+        var t=try Codec.decode(Transcript.self,originalBytes);try t.validate()
+        let before=t,started=Date(),timings=pendingTimings[url] ?? [:]
+        for i in (t.attempts ?? []).indices {if let duration=timings[t.attempts![i].id] {t.attempts![i].databaseSeconds=duration}}
         var lesson=lesson
         for variant in (t.variants ?? [:]).values {lesson.sidecars=(lesson.sidecars ?? [:]).merging(variant.sidecars ?? [:]){_,new in new}}
-        let selected=t.variantID;var messages:[String]=[]
+        let selected=t.variantID;var messages:[String]=[];var outcome=FileSaveOutcome.unchanged
+        let hidden=UserDefaults.standard.object(forKey:"hideSpeakerLabels") as? Bool ?? true
         for id in (t.variants ?? [:]).keys.sorted() where !(t.variants?[id]?.translations.isEmpty ?? true) {
             t=t.viewing(id)
-            do {
-                guard let path=lesson.subtitlePath else{throw Failure("请定位原英文字幕")}
-                let original=URL(fileURLWithPath:path)
-                guard digest(try Data(contentsOf:original))==t.version else{throw Failure("原字幕缺失或已变化，请重新定位")}
-                lesson.sidecars=try SidecarWriter.write(t,lesson:lesson,beside:original,hideSpeakers:UserDefaults.standard.object(forKey:"hideSpeakerLabels") as? Bool ?? true)
-                t.variants?[id]?.sidecars=lesson.sidecars
-                t.variants?[id]?.fileStatus="文件已保存"
-            } catch {t.variants?[id]?.fileStatus="文件待保存："+error.localizedDescription}
+            let input=try SidecarWriter.inputKey(t,lesson:lesson,hideSpeakers:hidden)
+            let variant=t.variants![id]!
+            let files=variant.sidecars ?? [:]
+            let missing=files.isEmpty || files.keys.contains{!FileManager.default.fileExists(atPath:$0)}
+            // A failed attempt is retried only after business inputs change or explicit user action.
+            let failed=variant.fileStatus?.hasPrefix("文件待保存") == true
+            let same=variant.fileInputKey==input
+            if !onlyIfNeeded || !same || (!failed && missing) || variant.fileStatus=="译文已保存；等待生成文件" {
+                do {
+                    guard let path=lesson.subtitlePath else{throw StorageIssue(.unavailable)}
+                    let original=URL(fileURLWithPath:path)
+                    guard digest(try Data(contentsOf:original))==t.version else{throw StorageIssue(.unavailable)}
+                    let report=try SidecarWriter.writeReport(t,lesson:lesson,beside:original,hideSpeakers:hidden)
+                    lesson.sidecars=report.files
+                    t.variants?[id]?.sidecars=report.files
+                    t.variants?[id]?.fileStatus=report.outcome == .conflict ? "文件已保存；人工修改文件已保留，译文另存" : "文件已保存"
+                    if outcome != .failed && report.outcome != .unchanged {outcome=report.outcome}
+                    if report.writes>0 {StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.sidecar,outcome:report.outcome,bytes:report.bytes,count:report.writes)}
+                } catch {
+                    outcome = .failed
+                    t.variants?[id]?.fileStatus="文件待保存："+StorageIssue(error).localizedDescription+" 译文已在资料库中；重试文件保存不会重新翻译。"
+                    StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.sidecar,outcome:.failed,error:error)
+                }
+                t.variants?[id]?.fileInputKey=input
+            }
             messages.append((t.variants?[id]?.title ?? id)+" · "+(t.variants?[id]?.fileStatus ?? ""))
         }
         t=t.viewing(selected)
-        if let last=t.attempts?.indices.last {t.attempts![last].sidecarSeconds=Date().timeIntervalSince(started)}
-        try Codec.encode(t).write(to:url,options:.atomic)
-        return TranslationCommit(transcript:t,complete:true,saved:0,sidecars:lesson.sidecars,fileStatus:messages.joined(separator:"；"))
+        // Only requests committed in this process receive timings, once. Recovery never edits history.
+        for i in (t.attempts ?? []).indices where timings[t.attempts![i].id] != nil {t.attempts![i].sidecarSeconds=Date().timeIntervalSince(started)}
+        if t != before {
+            let bytes=try Codec.encode(t)
+            if bytes != originalBytes {try writeTranscript(bytes,url);StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:bytes.count)}
+        }
+        pendingTimings[url]=nil
+        return TranslationCommit(transcript:t,complete:true,saved:0,sidecars:lesson.sidecars,fileStatus:messages.joined(separator:"；"),fileOutcome:outcome)
     }
     func read(_ url:URL) throws -> Transcript {let t=try Codec.decode(Transcript.self,Data(contentsOf:url));try t.validate();return t}
     func commit(result:TranslationResult,batch:TranslationBatch,config:TranslationConfig,lesson:Lecture,url:URL,seconds:Double?,attemptID:UUID,allowSave:Bool,deferFiles:Bool=false,queueSeconds:Double?=nil) throws -> TranslationCommit {
@@ -82,7 +122,8 @@ actor TranslationWriter {
         let selectedVariant=t.variantID
         t.variants?[selectedVariant]?.fileStatus="译文已保存；等待生成文件"
         try t.validate()
-        let dbStart=Date();try Codec.encode(t).write(to:url,options:.atomic)
+        let dbStart=Date();let payload=try Codec.encode(t);try writeTranscript(payload,url)
+        StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:payload.count)
         let duration=Date().timeIntervalSince(dbStart)
         pendingTimings[url,default:[:]][attemptID]=duration;PerformanceTrace.record("translation.commit",duration)
         var saved=TranslationCommit(transcript:t,complete:complete,saved:a.saved,sidecars:nil,fileStatus:"译文已保存；等待生成文件")

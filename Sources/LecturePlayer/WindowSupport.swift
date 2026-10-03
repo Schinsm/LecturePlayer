@@ -91,8 +91,8 @@ struct StudySplit<Left: View, Right: View>: NSViewRepresentable {
     func makeNSView(context: Context) -> ReaderSplitContainer {
         let split = Split(); split.isVertical = true; split.dividerStyle = .thin
         split.addArrangedSubview(NSHostingView(rootView: left)); split.addArrangedSubview(NSHostingView(rootView: right))
-        context.coordinator.identity=identity;split.delegate = split; split.setRightVisible(rightVisible);
-        let host=ReaderSplitContainer(split:split);host.configure(visible:rightVisible,toggle:toggleReader);return host
+        context.coordinator.identity=identity; split.setRightVisible(rightVisible);
+        let host=ReaderSplitContainer(split:split,delegate:SplitDelegate(split));host.configure(visible:rightVisible,toggle:toggleReader);return host
     }
     func updateNSView(_ host: ReaderSplitContainer, context: Context) {
         guard let split=host.split as? Split else{return}
@@ -102,7 +102,17 @@ struct StudySplit<Left: View, Right: View>: NSViewRepresentable {
         (split.arrangedSubviews[0] as? NSHostingView<Left>)?.rootView = left
         (split.arrangedSubviews[1] as? NSHostingView<Right>)?.rootView = right
     }
-    class Split: NSSplitView, NSSplitViewDelegate {
+    /// NSObject answers only its own protocol selectors; never forwards menu queries to the split.
+    final class SplitDelegate: NSObject, NSSplitViewDelegate {
+        weak var split: Split?
+        init(_ split: Split) {self.split=split;super.init()}
+        func splitView(_ view:NSSplitView,shouldHideDividerAt index:Int)->Bool {split?.rightVisible == false}
+        func splitView(_ view:NSSplitView,effectiveRect rect:NSRect,forDrawnRect drawn:NSRect,ofDividerAt index:Int)->NSRect {split?.rightVisible == false ? .zero : rect}
+        func splitView(_ view:NSSplitView,constrainMinCoordinate proposed:CGFloat,ofSubviewAt index:Int)->CGFloat {420}
+        func splitView(_ view:NSSplitView,constrainMaxCoordinate proposed:CGFloat,ofSubviewAt index:Int)->CGFloat {view.bounds.width-300}
+        func splitViewDidResizeSubviews(_ notification:Notification) {split?.splitViewDidResizeSubviews(notification)}
+    }
+    class Split: NSSplitView {
         private var saveTimer:Timer?
         deinit{saveTimer?.invalidate()}
         var initialized = false; var restoring = false

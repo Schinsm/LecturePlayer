@@ -18,6 +18,7 @@ public struct TranslationVariant: Codable, Equatable, Sendable, Identifiable {
     public var completedBatches: [String] = []
     public var sidecars: [String:String]?
     public var fileStatus: String?
+    public var fileInputKey: String?
     public init(id:String, service:TranslationService?) {self.id=id;self.service=service}
     public var title:String {service?.title ?? "历史译文"}
 }

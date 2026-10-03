@@ -58,12 +58,14 @@ final class VideoEdgeMarker:NSView {
 
 final class ReaderSplitContainer:NSView {
     let split:NSSplitView
+    private let retainedDelegate: NSSplitViewDelegate?
     let handle=ReaderPaneToggle(frame:.zero)
     weak var videoMarker:VideoEdgeMarker?
     private var tracking:NSTrackingArea?
     private(set) var sensingRect=NSRect.zero
-    init(split:NSSplitView) {
-        self.split=split;super.init(frame:split.frame)
+    init(split:NSSplitView,delegate:NSSplitViewDelegate?=nil) {
+        self.split=split;self.retainedDelegate=delegate;super.init(frame:split.frame)
+        if let delegate {split.delegate=delegate}
         addSubview(split);addSubview(handle)
         split.autoresizingMask=[.width,.height]
         setAccessibilityElement(false)

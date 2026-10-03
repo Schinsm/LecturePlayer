@@ -9,6 +9,7 @@ import Core
 }
 @MainActor final class Repository {
     let root: URL; let container: ModelContainer; var context: ModelContext
+    var onWriteFailure:((Error)->Void)?
     let commits:MetadataCommitQueue
     init(root: URL) throws {
         self.root = root
@@ -57,6 +58,9 @@ import Core
         try FileManager.default.moveItem(at: temporary, to: target)
     }
     func save(_ library: Library) throws {
+        do {try saveLibrary(library)}catch{onWriteFailure?(error);throw error}
+    }
+    private func saveLibrary(_ library: Library) throws {
         try commits.flush(); context=ModelContext(container);context.autosaveEnabled=false
         try library.validate()
         var expected: [String: Data] = ["schema": try Codec.encode(library.schema), "last": try Codec.encode(library.lastLecture)]
@@ -67,7 +71,7 @@ import Core
         let rows = try context.fetch(FetchDescriptor<MetadataRecord>())
         for row in rows { if let data = expected.removeValue(forKey: row.key) { if row.payload != data { row.payload = data } } else { context.delete(row) } }
         for (key, payload) in expected { context.insert(MetadataRecord(key: key, payload: payload)) }
-        do { try context.save() } catch { context.rollback(); throw error }
+        do { if context.hasChanges {try context.save()} } catch { context.rollback(); throw error }
     }
     func transcriptURL(_ lectureID: UUID, _ version: String) throws -> URL {
         guard version.count == 64, version.allSatisfy({ $0.isHexDigit }) else { throw Failure("无效字幕文件标识") }
@@ -78,5 +82,5 @@ import Core
         guard let version = lecture.transcriptVersion else { return nil }
         let t = try Codec.decode(Transcript.self, Data(contentsOf: transcriptURL(lecture.id, version))); try t.validate(); return t.viewing(variantID ?? lecture.selectedTranslationVariantID)
     }
-    func write(_ transcript: Transcript, for lectureID: UUID) throws { TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}; try transcript.validate(); try Codec.encode(transcript).write(to: transcriptURL(lectureID, transcript.version), options: .atomic) }
+    func write(_ transcript: Transcript, for lectureID: UUID) throws { TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}; do {try transcript.validate();let url=try transcriptURL(lectureID,transcript.version);let data=try Codec.encode(transcript);if (try? Data(contentsOf:url)) != data {try data.write(to:url,options:.atomic)}}catch{onWriteFailure?(error);throw error} }
 }

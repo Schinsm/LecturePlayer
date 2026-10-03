@@ -9,7 +9,8 @@ import Testing
     @Test func collapseKeepsHostedViewsAndWidthWithoutSavingCollapsedRatio() {
         _=NSApplication.shared
         let split=StudySplit<Text,Text>.Split(frame:NSRect(x:0,y:0,width:1200,height:700))
-        split.isVertical=true;split.delegate=split
+        split.isVertical=true;let delegate=StudySplit<Text,Text>.SplitDelegate(split);split.delegate=delegate
+        defer {withExtendedLifetime(delegate){}}
         let left=NSView(),right=NSView();split.addArrangedSubview(left);split.addArrangedSubview(right)
         split.layout();split.setPosition(700,ofDividerAt:0);let width=left.frame.width
         for _ in 0..<5 {
