@@ -124,10 +124,9 @@ struct VideoPane: View {
         HStack(spacing: 10) {
                 CoursePlaylistButton(store:store)
                 VideoCaptionControls(store: store, presentation:store.captions)
-                Picker("倍速", selection: Binding(get: { store.lecture?.state.speed ?? 1 }, set: { speed in
+                PlaybackSpeedButton(speed: store.lecture?.state.speed ?? 1) { speed in
                     if let id = store.current { store.updateLecture(id) { $0.state.speed = speed }; playback.speed(speed) }
-                })) { ForEach([0.75,1,1.25,1.5,1.75,2,2.5], id: \.self) { Text("\($0.formatted())×").tag($0) } }
-                    .labelsHidden().frame(width: compact ? 55 : 80)
+                }.frame(width: compact ? 55 : 80, height: 24)
                 Button { if compact { volumeOpen.toggle() } else { playback.toggleMute() } } label: { Image(systemName: playback.volume == 0 ? "speaker.slash" : "speaker.wave.2") }.accessibilityLabel("静音或恢复音量")
                     .popover(isPresented: $volumeOpen) {
                         HStack { Button {playback.toggleMute()} label: {Image(systemName: "speaker.slash")}; Slider(value: Binding(get: {playback.volume}, set: {playback.setVolume($0)}), in: 0...1).frame(width: 140) }.padding()

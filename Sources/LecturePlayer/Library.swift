@@ -34,6 +34,7 @@ import UniformTypeIdentifiers
     var rootGeneration = UUID()
     var watchesEnabled = true
     let captions = CaptionPresentation()
+    let pipPreferences: PictureInPicturePreferences
     let captionPreferences:GlobalCaptionPreferences
     let playlist=CoursePlaylistPresentation()
     let requests=RequestScheduler()
@@ -49,6 +50,7 @@ import UniformTypeIdentifiers
     }
     init(root explicitRoot: URL? = nil,preferences:UserDefaults? = nil) {
         let defaults=preferences ?? explicitRoot.flatMap{UserDefaults(suiteName:"local.LecturePlayer.Isolated."+digest($0.path))} ?? .standard
+        pipPreferences=PictureInPicturePreferences(defaults:defaults)
         captionPreferences=GlobalCaptionPreferences(defaults:defaults)
         do {
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
@@ -107,6 +109,7 @@ import UniformTypeIdentifiers
     }
     func open(_ id: UUID) {openLesson(id,autoplay:false,restart:false)}
     private func openLesson(_ id:UUID,autoplay:Bool,restart:Bool) {
+        pipPreferences.flush()
         guard let item=library.lectures.first(where:{$0.id==id}) else{return}
         readerPresentation.flush();captions.flush();playback.close();flushMetadata()
         readerPresentation.configure(id,panel:item.studyPanel ?? "transcript")
@@ -132,7 +135,7 @@ import UniformTypeIdentifiers
     func displayTranscript(_ value:Transcript, for id:UUID) {
         if current==id {transcript=value.viewing(library.lectures.first{$0.id==id}?.selectedTranslationVariantID ?? transcript?.variantID ?? "openAI")}
     }
-    func back() { captions.flush(); playback.close(); flushMetadata(); current = nil; transcript = nil }
+    func back() { pipPreferences.flush(); captions.flush(); playback.close(); flushMetadata(); current = nil; transcript = nil }
     func saveTranscript(_ value: Transcript, lectureID: UUID) throws { try repository?.write(value, for: lectureID); if current == lectureID { transcript = value }; saveVisibleTranslations(lectureID) }
     func addCourse(_ name: String) { let course = Course(name: name, order: library.courses.count); library.courses.append(course); selectedCourse = course.id; selectedFolder = nil; persist() }
     func addFolder(_ name: String) { guard let course = selectedCourse else { return }; library.folders.append(Folder(name: name, courseID: course, parentID: selectedFolder)); persist() }

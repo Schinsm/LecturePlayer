@@ -47,6 +47,8 @@ struct PlayerKeys:NSViewRepresentable {
         func handle(_ event:NSEvent)->NSEvent? {
             guard enabled,let window,event.window === window,!isHiddenOrHasHiddenAncestor,window.attachedSheet == nil,NSApp.modalWindow == nil else{return event}
             let responder=window.firstResponder
+            if let anchor = SpeedAnchorButton.active, anchor.window === window {return event}
+            if responder is PictureInPictureHandle && ([123,124,125,126].contains(event.keyCode) || ["+","=","-"].contains(event.characters ?? "")) {return event}
             if responder is ReaderPaneToggle {return event}
             if let text=responder as? NSTextView {
                 if text.isEditable || text.hasMarkedText() {return event}

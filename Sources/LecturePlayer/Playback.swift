@@ -5,6 +5,9 @@ import Core
 @MainActor final class Playback: ObservableObject {
     let player = AVPlayer()
     let secondaryPlayer = AVPlayer()
+    @Published private(set) var displaySizes: [UUID: CGSize] = [:]
+    private var sizeObservers: [NSKeyValueObservation] = []
+    private var sizeCache: [String: CGSize] = [:]
     @Published var ready = false; @Published var playing = false; @Published var position = 0.0; @Published var duration = 0.0; @Published var error: String?
     @Published private(set) var volume: Double = 1
     @Published private(set) var views: [MediaSource] = []
@@ -73,6 +76,16 @@ import Core
                         if item.status != .unknown { break }; try await Task.sleep(for: .milliseconds(20))
                     }
                     guard item.status == .readyToPlay else { throw Failure(item.error?.localizedDescription ?? "媒体准备超时") }
+                    guard self.generation == token, !Task.isCancelled else { return }
+                    // AVPlayerItem presentationSize is the displayed size, including rotation
+                    // and pixel aspect ratio; do not guess from the encoded track dimensions.
+                    let cacheKey = source.identity + ":" + (source.contentHash ?? "")
+                    if !source.identity.isEmpty, source.contentHash != nil, let size = self.sizeCache[cacheKey] { self.displaySizes[source.id] = size }
+                    self.acceptDisplaySize(item.presentationSize, source: source, token: token)
+                    self.sizeObservers.append(item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] item, _ in
+                        let size = item.presentationSize
+                        Task { @MainActor [weak self] in self?.acceptDisplaySize(size, source: source, token: token) }
+                    })
                 } catch {
                     guard self.generation == token, !Task.isCancelled else { return }
                     self.missing.insert(source.id); self.error = "\(source.role.rawValue)：\(error.localizedDescription)。资料已保留，可重新定位。"
@@ -93,6 +106,14 @@ import Core
             if restart {self.completionChanged?(lecture.id,false)}
             self.startLoop(token)
             if self.intentPlaying && self.missing.isEmpty {self.scheduleStart()}else{self.intentPlaying=false}
+        }
+    }
+    private func acceptDisplaySize(_ size: CGSize, source: MediaSource, token: UUID) {
+        guard generation == token, views.contains(where: { $0.id == source.id }), PictureInPictureGeometry.aspect(size) != nil else { return }
+        if displaySizes[source.id] != size { displaySizes[source.id] = size }
+        if !source.identity.isEmpty, source.contentHash != nil {
+            if sizeCache.count >= 64 { sizeCache.removeAll() }
+            sizeCache[source.identity + ":" + (source.contentHash ?? "")] = size
         }
     }
     private func seekPlayers(_ value: Double) async -> Bool {
@@ -171,6 +192,7 @@ import Core
     }
     func persist() { guard ready, let id = lectureID else { return }; let seconds = pendingSeek ?? actualPosition; guard seconds.isFinite else { return }; lastSave=Date();if let old=lastPersisted,old.0==id,abs(old.1-seconds)<0.001,old.2==duration{return};save?(id,max(0,seconds),duration);lastPersisted=(id,seconds,duration) }
     func close() {
+        sizeObservers.removeAll(); displaySizes.removeAll()
         persist(); ready = false;naturallyEnded=false;naturalEndEligible=false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
         loadTask?.cancel(); loop?.cancel(); controlTask?.cancel(); loadTask = nil; loop = nil; controlTask = nil
         for p in players { p.cancelPendingPrerolls(); p.pause(); p.replaceCurrentItem(with: nil) }
