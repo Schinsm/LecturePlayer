@@ -62,7 +62,7 @@ import Core
         let started = ProcessInfo.processInfo.systemUptime
         PerformanceTrace.record("video.firstFrameRecoveryStarted", 1)
         let success = await seekPlayer(p, to: local)
-        guard matchesDisplayBinding(sourceID: sourceID, generation: token, item: item), seekGeneration == operation else { return false }
+        guard !Task.isCancelled, matchesDisplayBinding(sourceID: sourceID, generation: token, item: item), seekGeneration == operation else { return false }
         // A user pause/seek changes seekGeneration and takes precedence. The
         // current intent, rather than a captured rate, governs resuming audio.
         if intentPlaying && !Task.isCancelled { p.rate = Float(targetSpeed) }

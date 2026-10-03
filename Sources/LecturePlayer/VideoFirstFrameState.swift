@@ -24,8 +24,10 @@ struct VideoFirstFrameState {
             presented = true; status = .ready; started = nil; recoveryStarted = nil
             return false
         }
-        if presented { status = .ready; return false }
         guard eligible else { started = nil; status = .idle; return false }
+        // Ready is current presentation state, not a permanent latch. A layer
+        // can lose readiness after remounting even while audio keeps advancing.
+        presented = false
         if failed { status = .failed; return false }
         if let recoveryStarted {
             if now - recoveryStarted >= timeout { failed = true; status = .failed }
@@ -35,6 +37,7 @@ struct VideoFirstFrameState {
         if started == nil { started = now }
         let elapsed = now - (started ?? now)
         status = elapsed >= revealDelay ? .loading : .waiting
+        if elapsed >= timeout && automaticRecoveryAttempted { failed = true; status = .failed; return false }
         if elapsed >= timeout && !automaticRecoveryAttempted {
             automaticRecoveryAttempted = true; recoveryStarted = now; status = .recovering
             return true

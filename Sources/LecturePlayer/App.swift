@@ -110,7 +110,7 @@ struct LibraryPage: View {
                         Button("添加第二路视频…") { store.addSecondVideo(item.id) }.disabled(item.mediaSources.count == 2)
                         Button("作为主条目合并双视频…") { store.chooseMerge(primaryID: item.id) }.disabled(item.mediaSources.count != 1)
                         Button("本课文件…") {fileLesson=LessonSelection(ids:[item.id])}
-                        Button("生成总结…") {analysisLesson=LessonSelection(ids:[item.id])}
+                        LessonAnalysisMenuAction(store:store,lesson:item) {analysisLesson=LessonSelection(ids:[item.id])}
                     }
                 }
                 }.listStyle(.plain)

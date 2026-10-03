@@ -83,6 +83,27 @@ import Core
     }
 }
 
+/// The menu observes the same snapshots as the row. Reading from AppStore alone
+/// misses changes published by its nested status/job objects.
+struct LessonAnalysisMenuAction:View {
+    let lesson:Lecture
+    let open:()->Void
+    @ObservedObject private var snapshot:LessonStatusPresentation
+    @ObservedObject private var job:AnalysisJob
+    @ObservedObject private var processing:ImportProcessingCoordinator
+    init(store:AppStore,lesson:Lecture,open:@escaping ()->Void) {
+        self.lesson=lesson;self.open=open
+        snapshot=store.lessonStatuses;job=store.analysis;processing=store.processing
+    }
+    var availability:AnalysisAvailability {
+        let queued=processing.entries.contains {$0.id==lesson.id && $0.status != "完成" && $0.analysis != nil}
+        return snapshot.availability(lesson,job:job,queued:queued,queuePaused:!processing.running || processing.paused)
+    }
+    var body:some View {
+        Button(availability.action,action:open)
+    }
+}
+
 struct LessonWorkStatus:View {
     let store:AppStore;let lesson:Lecture
     @ObservedObject private var snapshot:LessonStatusPresentation

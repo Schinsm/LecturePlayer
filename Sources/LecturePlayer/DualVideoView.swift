@@ -13,8 +13,7 @@ struct DualVideoView: View {
     }
 }
 
-/// Keep each AVPlayerView attached to its own player across all layouts.
-/// Swapping players between reused SwiftUI representables can detach the other's video surface.
+/// Keep transport instances stable; each mounted surface owns its rendering layer.
 struct VideoCanvas: NSViewRepresentable {
     let playback: Playback; let layout: VideoLayout; let swapped: Bool
     let preferences: PictureInPicturePreferences
@@ -22,8 +21,9 @@ struct VideoCanvas: NSViewRepresentable {
     func updateNSView(_ view: Canvas, context: Context) {
         view.configure(playback, layout: layout, swapped: swapped, preferences: preferences)
     }
+    static func dismantleNSView(_ view: Canvas, coordinator: ()) { view.tearDown() }
     final class Canvas: NSView {
-        let videos = [AVPlayerView(), AVPlayerView()]
+        let videos = [VideoSurface(), VideoSurface()]
         let handle = PictureInPictureHandle()
         let messages = [NSTextField(wrappingLabelWithString: ""), NSTextField(wrappingLabelWithString: "")]
         let recoveryButtons = [NSButton(title: "恢复画面", target: nil, action: nil), NSButton(title: "恢复画面", target: nil, action: nil)]
@@ -54,7 +54,7 @@ struct VideoCanvas: NSViewRepresentable {
         override init(frame: NSRect) {
             super.init(frame: frame); wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor
             for i in videos.indices {
-                let v = videos[i]; v.controlsStyle = .none; v.videoGravity = .resizeAspect; v.wantsLayer = true; v.layer?.backgroundColor = NSColor.black.cgColor
+                let v = videos[i]
                 addSubview(v)
                 let message = messages[i]
                 message.alignment = .center; message.textColor = .white; message.backgroundColor = .black
@@ -85,9 +85,9 @@ struct VideoCanvas: NSViewRepresentable {
             sizes = playback.displaySizes
             sources = playback.views; mode = layout; self.swapped = swapped
             for i in videos.indices {
-                guard i < sources.count else { videos[i].isHidden = true; frameBindings[i] = nil; continue }
+                guard i < sources.count else { videos[i].isHidden = true; videos[i].detach(); frameBindings[i] = nil; baseMessages[i] = ""; continue }
                 let source = sources[i], player = playback.player(for: source)
-                if videos[i].player !== player { videos[i].player = player }
+                videos[i].player = player
                 videos[i].setAccessibilityLabel(source.role.rawValue + "视频")
                 bindFirstFrame(index: i, source: source, playback: playback)
                 baseMessages[i] = playback.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
@@ -168,8 +168,23 @@ struct VideoCanvas: NSViewRepresentable {
             guard let playback, binding.recovery == nil else { return }
             binding.recovery = Task { [weak self, weak binding, weak playback] in
                 guard let binding, let playback else { return }
-                let result = await playback.recoverFirstFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item, manual: manual)
+                // Repair presentation first. Seeking alone cannot fix a detached layer.
                 guard let self, self.frameBindings[index]?.identity == binding.identity else { return }
+                self.videos[index].rebuildPresentation()
+                PerformanceTrace.record("video.surfaceRebuild", 1)
+                for _ in 0..<10 {
+                    do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+                    guard self.frameBindings[index]?.identity == binding.identity else { return }
+                    if self.videos[index].isReadyForDisplay { break }
+                }
+                let decoded = playback.hasCurrentItemFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item)
+                let result: Bool
+                if decoded {
+                    result = self.videos[index].isReadyForDisplay
+                } else {
+                    result = await playback.recoverFirstFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item, manual: manual)
+                }
+                guard self.frameBindings[index]?.identity == binding.identity, !Task.isCancelled else { return }
                 binding.recovery = nil; binding.state.recoveryFinished(success: result)
                 self.sampleFirstFrames()
             }
@@ -228,6 +243,7 @@ struct VideoCanvas: NSViewRepresentable {
                     let height = messages[i].cell?.cellSize(forBounds: CGRect(x: 0, y: 0, width: width, height: 100)).height ?? 40
                     messages[i].frame = CGRect(x: frame.midX - width / 2, y: frame.midY - height / 2, width: width, height: height)
                 }
+                videos[i].setPresentationEnabled(frames[i] != nil)
                 messages[i].layer?.zPosition = 2
                 videos[i].layer?.borderWidth = mode == .inset && sources.count == 2 && i == secondary ? 1 : 0
                 videos[i].layer?.borderColor = NSColor.gray.cgColor
@@ -260,6 +276,12 @@ struct VideoCanvas: NSViewRepresentable {
         override func viewWillMove(toWindow newWindow: NSWindow?) {
             if newWindow == nil { preferences?.flush(); stopFrameTimer() }
             super.viewWillMove(toWindow: newWindow)
+        }
+        func tearDown() {
+            stopFrameTimer(); subscription = nil
+            windowObservers.forEach { NotificationCenter.default.removeObserver($0) }; windowObservers.removeAll()
+            frameBindings.values.forEach { $0.recovery?.cancel() }; frameBindings.removeAll()
+            videos.forEach { $0.detach() }; playback = nil
         }
         deinit { frameTimer?.invalidate(); windowObservers.forEach { NotificationCenter.default.removeObserver($0) } }
     }
