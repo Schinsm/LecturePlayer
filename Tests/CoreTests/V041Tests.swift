@@ -43,7 +43,7 @@ import Testing
         let edited = Data("manual changes".utf8); try edited.write(to: URL(fileURLWithPath: path))
         t.translations[t.cues[1].id] = Translation(ai:"世界",cacheKey:"mock")
         let files = try SidecarWriter.write(t, lesson: lesson, beside: subtitle)
-        #expect(files.count == 3); #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == edited)
+        #expect(files.count == 2); #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == edited)
         #expect(try Data(contentsOf: subtitle) == original)
         #expect(try ImportPlanner.scan([root]).map(\.path) == [DirectoryIndex.canonical(subtitle).path])
         var missing=lesson;missing.path=root.appendingPathComponent("missing/a.mp4").path

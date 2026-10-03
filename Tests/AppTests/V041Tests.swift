@@ -64,7 +64,7 @@ import SwiftData
     func isolatedFormalUpgrade() throws {
         let path = try #require(ProcessInfo.processInfo.environment["LP_041_FORMAL_COPY"])
         let repository = try Repository(root: URL(fileURLWithPath:path)); let library = try repository.load()
-        #expect(library.schema == 4); let item = try #require(library.lectures.first)
+        #expect(library.schema == 5); let item = try #require(library.lectures.first)
         #expect(item.state.offset == 14); #expect(item.state.position > 5000)
         #expect(try repository.read(item)?.translatedCount == 5)
         let snapshot = try FileManager.default.contentsOfDirectory(at: repository.root, includingPropertiesForKeys:nil).first { $0.lastPathComponent.hasPrefix("before-v07") }

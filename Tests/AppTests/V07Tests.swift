@@ -51,7 +51,7 @@ import SwiftData
         guard path.hasPrefix("/private/tmp/LecturePlayer-07-QA/") else{throw Failure("Requires isolated data")}
         let root=URL(fileURLWithPath:path),files=try FileManager.default.contentsOfDirectory(at:root.appendingPathComponent("transcripts"),includingPropertiesForKeys:nil)
         var old:[String:Transcript]=[:];for f in files where f.pathExtension=="json" {old[f.lastPathComponent]=try Codec.decode(Transcript.self,Data(contentsOf:f))}
-        let repo=try Repository(root:root),lib=try repo.load();#expect(lib.schema==4)
+        let repo=try Repository(root:root),lib=try repo.load();#expect(lib.schema==5)
         var count=0
         for (name,before) in old {
             let after=try Codec.decode(Transcript.self,Data(contentsOf:root.appendingPathComponent("transcripts/"+name)));try after.validate()

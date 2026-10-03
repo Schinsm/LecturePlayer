@@ -49,6 +49,8 @@ struct LibraryPage: View {
     @LPState private var details: LessonSelection?
     @LPState private var selectedLessons = Set<UUID>()
     @LPState private var chapterBatch = false
+    @LPState private var fileLesson:LessonSelection?
+    @LPState private var analysisLesson:LessonSelection?
     @ObservedObject var navigation:DirectoryPresentation
     init(store:AppStore,importing:Binding<Bool>){self.store=store;_importing=importing;navigation=store.navigation}
     var courses: [Course] { store.library.courses.filter { $0.directoryPath?.hasPrefix((store.library.directoryRoot ?? "") + "/") == true }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
@@ -107,7 +109,8 @@ struct LibraryPage: View {
                         Button("课件详情…") { details = LessonSelection(ids: [item.id]) }
                         Button("添加第二路视频…") { store.addSecondVideo(item.id) }.disabled(item.mediaSources.count == 2)
                         Button("作为主条目合并双视频…") { store.chooseMerge(primaryID: item.id) }.disabled(item.mediaSources.count != 1)
-                        Button("资料位置…") { store.showingLocations = true }
+                        Button("本课文件…") {fileLesson=LessonSelection(ids:[item.id])}
+                        Button("生成总结…") {analysisLesson=LessonSelection(ids:[item.id])}
                     }
                 }
                 }.listStyle(.plain)
@@ -122,6 +125,8 @@ struct LibraryPage: View {
             }
         }.sheet(item: $details) { LessonDetails(store: store, ids: $0.ids) }
         .sheet(isPresented:$chapterBatch) {ChapterBatchConfirmation(store:store,ids:selectedLessons)}
+        .sheet(item:$fileLesson) {selection in DataLocations(store:store,lessonID:selection.ids.first)}
+        .sheet(item:$analysisLesson) {selection in if let id=selection.ids.first {AnalysisConfirmation(store:store,job:store.analysis,translation:store.translation,lessonID:id)}}
     }
     func courseButton(_ course:Course)->some View {
         Button { store.selectedCourse=course.id;store.selectedFolder=nil } label: { Label(course.name,systemImage:"folder").lineLimit(1).help(course.name).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle()) }.buttonStyle(.plain).contextMenu {Button("在 Finder 打开"){if let path=course.directoryPath {NSWorkspace.shared.open(URL(fileURLWithPath:path))}}}

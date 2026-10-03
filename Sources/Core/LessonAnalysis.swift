@@ -230,17 +230,39 @@ public actor AnalysisRepository {
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
         try Codec.encode(record).write(to:url,options:.atomic)
     }
-    public func all(lessonID: UUID? = nil) throws -> [LessonAnalysis] { try Self.readAll(root:root).filter { lessonID == nil || $0.lessonID==lessonID } }
-    public nonisolated static func readAll(root: URL) throws -> [LessonAnalysis] {
+    public func all(lessonID: UUID? = nil) throws -> [LessonAnalysis] { try Self.readAll(root:root,lessonID:lessonID) }
+    public nonisolated static func readAll(root: URL,lessonID:UUID?=nil) throws -> [LessonAnalysis] {
         let folder=root.appendingPathComponent("analyses",isDirectory:true)
         guard FileManager.default.fileExists(atPath:folder.path) else { return [] }
-        let urls=try FileManager.default.contentsOfDirectory(at:folder,includingPropertiesForKeys:nil).filter{$0.pathExtension=="json"}.sorted{$0.lastPathComponent<$1.lastPathComponent}
+        let urls=try FileManager.default.contentsOfDirectory(at:folder,includingPropertiesForKeys:nil).filter{$0.pathExtension=="json" && (lessonID == nil || $0.lastPathComponent.hasPrefix(lessonID!.uuidString+"-"))}.sorted{$0.lastPathComponent<$1.lastPathComponent}
         return try urls.map { url in
+            try Task.checkCancellation()
             let value=try Codec.decode(LessonAnalysis.self,Data(contentsOf:url)); try value.validate()
             guard url.lastPathComponent==fileURL(root:root,lessonID:value.lessonID,sourceVersion:value.sourceVersion).lastPathComponent else { throw Failure("总结文件名与身份不一致") }
             return value
         }
     }
+    public struct Inventory:Sendable {public var records:[LessonAnalysis]=[];public var errors:[UUID:String]=[:];public var unassignedErrors:[String]=[]}
+    public func inventory() throws -> Inventory {try Self.inventory(root:root)}
+    public nonisolated static func inventory(root:URL) throws -> Inventory {
+        let folder=root.appendingPathComponent("analyses")
+        guard FileManager.default.fileExists(atPath:folder.path) else{return Inventory()}
+        var result=Inventory()
+        for url in try FileManager.default.contentsOfDirectory(at:folder,includingPropertiesForKeys:nil).filter({$0.pathExtension=="json"}).sorted(by:{$0.lastPathComponent<$1.lastPathComponent}) {
+            try Task.checkCancellation()
+            let id=UUID(uuidString:String(url.lastPathComponent.prefix(36)))
+            do {
+                let record=try Codec.decode(LessonAnalysis.self,Data(contentsOf:url));try record.validate()
+                guard url.lastPathComponent==fileURL(root:root,lessonID:record.lessonID,sourceVersion:record.sourceVersion).lastPathComponent else {throw Failure("总结文件身份不一致")}
+                result.records.append(record)
+            } catch {
+                if let id {result.errors[id]=error.localizedDescription}
+                else {result.unassignedErrors.append(url.lastPathComponent+": "+error.localizedDescription)}
+            }
+        }
+        return result
+    }
+
 }
 public enum AnalysisMarkdown {
     public static func export(_ record: LessonAnalysis, transcript: Transcript, offset: Double = 0, title: String) throws -> String {

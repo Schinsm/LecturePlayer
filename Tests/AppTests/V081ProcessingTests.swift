@@ -57,7 +57,7 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         try reopened.processing.launch(entries,store:reopened,translationProvider:{_ in mock},analysisProvider:mock)
         await reopened.processing.worker?.value
         #expect(await mock.translations==before)
-        let backup=try reopened.snapshot();#expect(backup.schema==5)
+        let backup=try reopened.snapshot();#expect(backup.schema==6)
         try backup.validate()
     }
     @Test func failureDrainsBothRequestsThenResumesOnlyMissing() async throws {

@@ -28,7 +28,7 @@ import Testing
         #expect(old.variants?["legacy"]?.translations[t.cues[1].id]?.ai=="历史")
         #expect(old.cues==original.cues && old.original==original.original)
         var lib=Library();lib.schema=3;var b=Backup(library:lib,transcripts:["\(UUID())-\(t.version)":original]);b.schema=2;try b.validate()
-        var future=b;future.schema=6;#expect(throws:(any Error).self){try future.validate()}
+        var future=b;future.schema=7;#expect(throws:(any Error).self){try future.validate()}
     }
     @Test func serviceVariantsDoNotBlockEachOtherOrChangeTiming() throws {
         var t=try sample();let id=t.cues[0].id;t.translations[id]=Translation(ai:"A",cacheKey:"same")
@@ -78,16 +78,16 @@ import Testing
         let subtitle=root.appendingPathComponent("sub/original.vtt");try t.original.write(to:subtitle)
         var l=Lecture(title:"test",courseID:UUID(),folderID:nil,url:root.appendingPathComponent("screen/s1.mp4"),bookmark:nil,identity:"screen")
         l.sidecars=try SidecarWriter.write(t,lesson:l,beside:subtitle)
-        let first=try #require(l.sidecars?.keys.first{$0.hasSuffix("zh.vtt")});#expect(first.contains("/screen/") && first.contains(".openai."))
+        let first=try #require(l.sidecars?.keys.first{$0.hasSuffix("zh.vtt")});#expect(first.contains("/screen/") && first.contains("/openai."))
         let originalFile=try Data(contentsOf:URL(fileURLWithPath:first));let parsed=try SubtitleParser.parse(originalFile,format:"vtt");#expect(parsed.cues[0].sourceID=="original-1" && parsed.cues[0].start==1000)
         t=t.viewing("deepL");t.translations[t.cues[0].id]=Translation(ai:"第二版本",cacheKey:"b")
         l.sidecars=try SidecarWriter.write(t,lesson:l,beside:subtitle)
-        #expect(l.sidecars?.count==4 && l.sidecars!.keys.contains{$0.contains(".deepl.")})
+        #expect(l.sidecars?.count==2 && l.sidecars!.keys.contains{$0.contains("/deepl.")})
         #expect(try Data(contentsOf:URL(fileURLWithPath:first))==originalFile)
-        let second=try #require(l.sidecars?.keys.first{$0.contains(".deepl.") && $0.hasSuffix("zh.vtt")});try Data("USER EDIT".utf8).write(to:URL(fileURLWithPath:second))
+        let second=try #require(l.sidecars?.keys.first{$0.contains("/deepl.") && $0.hasSuffix("zh.vtt")});try Data("USER EDIT".utf8).write(to:URL(fileURLWithPath:second))
         t.translations[t.cues[1].id]=Translation(ai:"新句",cacheKey:"c");let files=try SidecarWriter.write(t,lesson:l,beside:subtitle)
         let edited=String(data:try Data(contentsOf:URL(fileURLWithPath:second)),encoding:.utf8)
-        #expect(files.count==5 && edited=="USER EDIT")
+        #expect(files.count==2 && edited=="USER EDIT")
         #expect(try ImportPlanner.scan([root]).count==1)
     }
 }

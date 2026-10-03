@@ -103,7 +103,7 @@ import Testing
         try Data("invalid refreshed file".utf8).write(to:file,options:.atomic)
         await store.analysis.load(store:store,lessonID:lesson.id)
         #expect(store.lessonStatuses.analysisIssue(lesson,job:store.analysis) != nil)
-        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="总结状态不可用")
+        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="总结失败")
         #expect(store.analysis.exact(lesson.id,version:source.version)?.completed==record.completed)
         #expect(!store.analysis.running && !store.translation.busy)
     }

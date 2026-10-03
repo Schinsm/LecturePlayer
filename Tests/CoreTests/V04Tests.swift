@@ -17,7 +17,7 @@ import Testing
         var lesson = Lecture(title: "Legacy", courseID: course.id, folderID: nil, url: URL(fileURLWithPath: "/tmp/old.mp4"), bookmark: nil, identity: "legacy")
         lesson.state.position = 3456; lesson.state.speed = 1.5; lesson.state.offset = 14; lesson.marks = [Mark(seconds: 55, note: "Keep")]; old.lectures = [lesson]
         let migrated = try LibraryMigration.upgrade(old)
-        #expect(migrated.schema == 4); #expect(migrated.lectures[0].id == lesson.id); #expect(migrated.lectures[0].state == lesson.state); #expect(migrated.lectures[0].marks == lesson.marks)
+        #expect(migrated.schema == 5); #expect(migrated.lectures[0].id == lesson.id); #expect(migrated.lectures[0].state == lesson.state); #expect(migrated.lectures[0].marks == lesson.marks)
         #expect(migrated.lectures[0].mediaSources[0].managed == false); #expect(migrated.lectures[0].path == lesson.path)
         var backup = Backup(library: old, transcripts: [:]); backup.schema = 1; try backup.validate()
         let decoded = try Codec.decode(Backup.self, Codec.encode(backup)); #expect(try LibraryMigration.upgrade(decoded.library) == migrated)

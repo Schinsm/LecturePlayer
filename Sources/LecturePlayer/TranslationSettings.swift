@@ -68,6 +68,9 @@ struct Keychain {
         for lesson in store.library.lectures {
             if let source=try? store.repository?.read(lesson) {
                 store.lessonStatuses.accept(source,for:lesson.id)
+                if (source.variants ?? [:]).values.contains(where:{!$0.translations.isEmpty && $0.generatedFiles==nil && $0.fileStatus?.hasPrefix("文件待保存") != true}) {
+                    store.fileSavePending[lesson.id]=true
+                }
                 if var record=source.variants?.values.compactMap(\.task).sorted(by: { ($0.state != "完成" && $0.state != "已取消" ? 0 : 1) < ($1.state != "完成" && $1.state != "已取消" ? 0 : 1) }).first {
                     if record.state != "完成" && record.state != "已取消" {record.state="待恢复"}
                     states[lesson.id]=record;onState?(lesson.id,record)

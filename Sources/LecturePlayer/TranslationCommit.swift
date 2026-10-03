@@ -7,6 +7,7 @@ struct TranslationCommit: Sendable {
     var transcript: Transcript; var complete: Bool; var saved: Int
     var sidecars: [String:String]?; var fileStatus: String
     var fileOutcome:FileSaveOutcome = .unchanged
+    var currentFilePaths:[String] {(transcript.variants ?? [:]).values.flatMap{$0.generatedFiles ?? []}.map(\.path).sorted()}
 }
 /// One actor owns background translation file transactions, including read/merge/write.
 actor TranslationWriter {
@@ -52,14 +53,23 @@ actor TranslationWriter {
         let before=t,started=Date(),timings=pendingTimings[url] ?? [:]
         for i in (t.attempts ?? []).indices {if let duration=timings[t.attempts![i].id] {t.attempts![i].databaseSeconds=duration}}
         var lesson=lesson
-        for variant in (t.variants ?? [:]).values {lesson.sidecars=(lesson.sidecars ?? [:]).merging(variant.sidecars ?? [:]){_,new in new}}
+        for id in (t.variants ?? [:]).keys {
+            let legacy=(lesson.sidecars ?? [:]).merging(t.variants?[id]?.sidecars ?? [:]){old,_ in old}
+            let history=GeneratedFiles.legacyFiles(legacy,lessonID:lesson.id,version:t.version,serviceID:id)
+            let combined=(t.variants?[id]?.historicalFiles ?? [:]).merging(history){old,_ in old}
+            t.variants?[id]?.historicalFiles=combined
+        }
+        for variant in (t.variants ?? [:]).values {
+            lesson.sidecars=(lesson.sidecars ?? [:]).merging(variant.historicalFiles ?? [:]){old,_ in old}
+            for record in variant.generatedFiles ?? [] {lesson.sidecars?[record.path]=record.checksum}
+        }
         let selected=t.variantID;var messages:[String]=[];var outcome=FileSaveOutcome.unchanged
         let hidden=UserDefaults.standard.object(forKey:"hideSpeakerLabels") as? Bool ?? true
         for id in (t.variants ?? [:]).keys.sorted() where !(t.variants?[id]?.translations.isEmpty ?? true) {
             t=t.viewing(id)
             let input=try SidecarWriter.inputKey(t,lesson:lesson,hideSpeakers:hidden)
             let variant=t.variants![id]!
-            let files=variant.sidecars ?? [:]
+            let files=Dictionary(uniqueKeysWithValues:(variant.generatedFiles ?? []).map{($0.path,$0.checksum)})
             let missing=files.isEmpty || files.keys.contains{!FileManager.default.fileExists(atPath:$0)}
             // A failed attempt is retried only after business inputs change or explicit user action.
             let failed=variant.fileStatus?.hasPrefix("文件待保存") == true
@@ -69,10 +79,15 @@ actor TranslationWriter {
                     guard let path=lesson.subtitlePath else{throw StorageIssue(.unavailable)}
                     let original=URL(fileURLWithPath:path)
                     guard digest(try Data(contentsOf:original))==t.version else{throw StorageIssue(.unavailable)}
-                    let report=try SidecarWriter.writeReport(t,lesson:lesson,beside:original,hideSpeakers:hidden)
-                    lesson.sidecars=report.files
+                    let report=try SidecarWriter.writeReport(t,lesson:lesson,beside:original,hideSpeakers:hidden,journalRoot:url.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("generated-writes"))
+                    lesson.sidecars=(lesson.sidecars ?? [:]).merging(report.files){_,new in new}
+                    let retired=(variant.generatedFiles ?? []).filter{old in !report.records.contains(where:{$0.path==old.path})}
+                    var history=t.variants?[id]?.historicalFiles ?? [:]
+                    for old in retired {history[old.path]=old.checksum}
+                    t.variants?[id]?.historicalFiles=history
+                    t.variants?[id]?.generatedFiles=report.records
                     t.variants?[id]?.sidecars=report.files
-                    t.variants?[id]?.fileStatus=report.outcome == .conflict ? "文件已保存；人工修改文件已保留，译文另存" : "文件已保存"
+                    t.variants?[id]?.fileStatus=report.outcome == .conflict || variant.fileStatus?.contains("人工修改文件已保留")==true ? "文件已保存；人工修改文件已保留，译文另存" : "文件已保存"
                     if outcome != .failed && report.outcome != .unchanged {outcome=report.outcome}
                     if report.writes>0 {StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.sidecar,outcome:report.outcome,bytes:report.bytes,count:report.writes)}
                 } catch {
@@ -97,6 +112,8 @@ actor TranslationWriter {
             for id in (t.variants ?? [:]).keys {
                 if try SidecarWriter.inputKey(latest.viewing(id),lesson:lesson,hideSpeakers:hidden) == SidecarWriter.inputKey(before.viewing(id),lesson:lesson,hideSpeakers:hidden) {
                     latest.variants?[id]?.sidecars=t.variants?[id]?.sidecars
+                    latest.variants?[id]?.generatedFiles=t.variants?[id]?.generatedFiles
+                    latest.variants?[id]?.historicalFiles=t.variants?[id]?.historicalFiles
                     latest.variants?[id]?.fileStatus=t.variants?[id]?.fileStatus
                     latest.variants?[id]?.fileInputKey=t.variants?[id]?.fileInputKey
                 } else {
@@ -110,7 +127,7 @@ actor TranslationWriter {
             let bytes=try Codec.encode(t)
             if bytes != latestBytes {try writeTranscript(bytes,url);StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:bytes.count)}
         }
-        messages=(t.variants ?? [:]).keys.sorted().map {id in (t.variants?[id]?.title ?? id)+" · "+(t.variants?[id]?.fileStatus ?? "")}
+        messages=(t.variants ?? [:]).keys.filter{!(t.variants?[$0]?.translations.isEmpty ?? true) || t.variants?[$0]?.task != nil}.sorted().map {id in (t.variants?[id]?.title ?? id)+" · "+(t.variants?[id]?.fileStatus ?? "")}
         pendingTimings[url]=nil
         return TranslationCommit(transcript:t,complete:true,saved:0,sidecars:lesson.sidecars,fileStatus:messages.joined(separator:"；"),fileOutcome:outcome)
     }

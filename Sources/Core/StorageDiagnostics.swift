@@ -5,6 +5,7 @@ public enum FileSaveOutcome:String,Sendable {case unchanged,written,conflict,fai
 public struct SidecarWriteReport:Sendable {
     public var files:[String:String];public var outcome:FileSaveOutcome
     public var writes:Int=0;public var bytes:Int=0
+    public var records:[GeneratedFileRecord]=[]
 }
 public struct StorageIssue:Error,LocalizedError,Sendable {
     public enum Kind:String,Sendable {case noSpace,permission,unavailable,conflict,unknown}

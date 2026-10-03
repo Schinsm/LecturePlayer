@@ -1,7 +1,7 @@
 import SwiftUI
 import Core
 
-struct ChapterBatchRow: Identifiable {
+struct ChapterBatchRow: Identifiable,Sendable {
     let id: UUID
     let title: String
     let detail: String
@@ -11,21 +11,25 @@ struct ChapterBatchRow: Identifiable {
     /// Read-only preview; frozen configurations are reused for unfinished work.
     static func rows(ids:Set<UUID>,store:AppStore,config:AnalysisConfig) throws -> [ChapterBatchRow] {
         guard let repository=store.repository else {throw Failure("资料库不可用")}
-        let records=try AnalysisRepository.readAll(root:repository.root)
-        return store.library.lectures.filter{ids.contains($0.id)}.sorted{
+        return try rows(lessons:store.library.lectures.filter{ids.contains($0.id)},root:repository.root,entries:store.processing.entries,config:config)
+    }
+    nonisolated static func rows(lessons:[Lecture],root:URL,entries:[ImportProcessingEntry],config:AnalysisConfig) throws -> [ChapterBatchRow] {
+        return lessons.sorted{
             let order=$0.title.localizedStandardCompare($1.title)
             return order == .orderedSame ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
         }.map {lesson in
             do {
-                guard let source=try repository.read(lesson),!source.cues.isEmpty else {throw Failure("先添加带时间戳的英文字幕")}
-                let existing=records.first{$0.lessonID==lesson.id && $0.sourceVersion==source.version}
-                if existing?.completed != nil && existing?.task == nil {
+                try Task.checkCancellation()
+                let prepared=try AnalysisPreparation.load(root:root,lesson:lesson,config:config)
+                let source=prepared.source,existing=prepared.existing
+                let availability=AnalysisAvailability(saved:existing.map(SavedAnalysisSummary.init))
+                if availability.state == .completed {
                     return ChapterBatchRow(id:lesson.id,title:lesson.title,detail:"已完成，本次跳过；重新生成请在本课章节页单独确认。",entry:nil)
                 }
-                if store.processing.entries.contains(where:{$0.id==lesson.id && $0.status != "完成" && $0.translation != nil}) {
+                if entries.contains(where:{$0.id==lesson.id && $0.status != "完成" && $0.translation != nil}) {
                     throw Failure("已有翻译与总结队列，请先从课件的“继续”入口恢复")
                 }
-                let queued=store.processing.entries.first{$0.id==lesson.id && $0.status != "完成"}?.analysis
+                let queued=entries.first{$0.id==lesson.id && $0.status != "完成"}?.analysis
                 let task=try existing?.task ?? queued ?? AnalysisTaskState(config:config,plan:AnalysisPlan.make(source))
                 guard task.plan == (try AnalysisPlan.make(source)) else {throw Failure("排队任务对应旧字幕，请在本课章节页重新确认")}
                 try task.validate()
@@ -53,6 +57,7 @@ struct ChapterBatchConfirmation: View {
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment:.leading,spacing:18) {
+                    if rows.isEmpty && error.isEmpty {ProgressView("正在准备所选课件…")}
                     ForEach(rows) {row in
                         VStack(alignment:.leading,spacing:6) {Text(row.title).font(.headline);Text(row.detail).font(.caption).textSelection(.enabled)}
                         Divider()
@@ -66,12 +71,20 @@ struct ChapterBatchConfirmation: View {
             HStack {
                 Button("取消") {dismiss()}.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("确认并依次生成") {
+                Button("确认生成") {
                     do {try processing.launch(rows.compactMap(\.entry),store:store);dismiss()} catch {self.error=error.localizedDescription}
                 }.buttonStyle(.borderedProminent)
                     .disabled(rows.compactMap(\.entry).isEmpty || !translation.acceptsQueuedWork || !keyAvailability.configured(.openAI))
             }
         }.padding(24).frame(width:600,height:520)
-            .task {do {rows=try ChapterBatchPlanner.rows(ids:ids,store:store,config:AnalysisPreferences.load())} catch {self.error=error.localizedDescription}}
+            .task(id:ids) {
+                do {
+                    guard let root=store.repository?.root else {throw Failure("资料库不可用")}
+                    let lessons=store.library.lectures.filter{ids.contains($0.id)},entries=store.processing.entries,config=AnalysisPreferences.load()
+                    let work=Task.detached(priority:.userInitiated) {try PerformanceTrace.measure("analysis.batch.prepare"){try ChapterBatchPlanner.rows(lessons:lessons,root:root,entries:entries,config:config)}}
+                    let result=try await withTaskCancellationHandler(operation:{try await work.value},onCancel:{work.cancel()})
+                    try Task.checkCancellation();rows=result
+                } catch is CancellationError {} catch {self.error=error.localizedDescription}
+            }
     }
 }

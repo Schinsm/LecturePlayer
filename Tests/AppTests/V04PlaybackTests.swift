@@ -49,7 +49,7 @@ import Core
         repository.context.insert(MetadataRecord(key: "f-\(old.folders[0].id)", payload: try Codec.encode(old.folders[0])))
         repository.context.insert(MetadataRecord(key: "l-\(old.lectures[0].id)", payload: try Codec.encode(old.lectures[0])))
         try repository.context.save()
-        let migrated = try repository.load(); #expect(migrated.schema == 4); #expect(migrated.lectures[0].state == old.lectures[0].state); #expect(try repository.read(migrated.lectures[0]) == transcript)
+        let migrated = try repository.load(); #expect(migrated.schema == 5); #expect(migrated.lectures[0].state == old.lectures[0].state); #expect(try repository.read(migrated.lectures[0]) == transcript)
         let snapshots = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("before-v07-") }
         #expect(snapshots.count == 1); let backup = try Codec.decode(Backup.self, Data(contentsOf: snapshots[0])); try backup.validate(); #expect(backup.library.schema == 1)
         // A corrupt legacy record must not replace the on-disk version or write an upgrade snapshot.

@@ -34,6 +34,7 @@ public struct Lecture: Codable, Identifiable, Equatable, Sendable {
     public var directoryChoice: String?
     public var subtitlePath: String?; public var subtitleBookmark: Data?; public var directoryPath: String?
     public var sidecars: [String: String]?; public var sidecarStatus: String?
+    public var generatedFilePaths:[String]?
     public var id = UUID(); public var courseID: UUID; public var folderID: UUID?; public var title: String; public var path: String; public var bookmark: Data?; public var identity: String; public var transcriptVersion: String?; public var state = PlaybackState(); public var duration = 0.0; public var finished = false; public var marks: [Mark] = []
     public var week: Int?; public var sessionType: String?; public var topic: String?; public var customTitle: Bool?
     public var sources: [MediaSource]?; public var layout: VideoLayout?; public var swapped: Bool?; public var audioSourceID: UUID?; public var archived: Bool?
@@ -41,10 +42,10 @@ public struct Lecture: Codable, Identifiable, Equatable, Sendable {
 }
 public struct Library: Codable, Equatable, Sendable {
     public var directoryRoot: String?; public var directoryBookmark: Data?
-    public var schema = 4; public var courses: [Course] = []; public var folders: [Folder] = []; public var lectures: [Lecture] = []; public var lastLecture: UUID?
+    public var schema = 5; public var courses: [Course] = []; public var folders: [Folder] = []; public var lectures: [Lecture] = []; public var lastLecture: UUID?
     public init() {}
     public func validate() throws {
-        guard schema == 4 else { throw Failure("不支持的资料库版本 \(schema)") }
+        guard schema == 5 else { throw Failure("不支持的资料库版本 \(schema)") }
         guard Set(courses.map(\.id)).count == courses.count, Set(folders.map(\.id)).count == folders.count, Set(lectures.map(\.id)).count == lectures.count else { throw Failure("重复的资料 ID") }
         for folder in folders { guard courses.contains(where: { $0.id == folder.courseID }) else { throw Failure("目录的课程不存在") }; try checkMove(folder.id, to: folder.parentID) }
         for lecture in lectures {

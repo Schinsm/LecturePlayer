@@ -45,6 +45,14 @@ public enum ImportPlanner {
         guard group.count == 2 else { return nil }
         return group.first { $0 != url && self.role(for: $0) != nil && self.role(for: $0) != role }
     }
-    public static func isGenerated(_ url: URL) -> Bool { url.lastPathComponent.contains(".lectureplayer-") }
+    public static func isGenerated(_ url: URL) -> Bool {
+        if url.lastPathComponent.contains(".lectureplayer-") {return true}
+        var parent=url
+        while parent.path != "/" {
+            if parent.lastPathComponent=="LecturePlayer",FileManager.default.fileExists(atPath:parent.appendingPathComponent(GeneratedFiles.marker).path) {return true}
+            parent.deleteLastPathComponent()
+        }
+        return false
+    }
     static func normalized(_ url:URL)->String {url.deletingPathExtension().lastPathComponent.lowercased().replacingOccurrences(of:"[._ -](en|eng|english|en-us|en-au|en-gb)$",with:"",options:.regularExpression)}
 }

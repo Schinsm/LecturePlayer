@@ -34,7 +34,10 @@ struct AnalysisPanel: View {
     private var source: Transcript? { stale ? historicalSource : store.transcript }
     private var mapper: SubtitleTimingMapper { lesson?.state.timingMapper ?? SubtitleTimingMapper() }
     private var thisRunning: Bool { job.isRunning(lesson?.id) }
-    private var unavailable: Bool { version.isEmpty || store.transcript?.cues.isEmpty != false }
+    private var availability:AnalysisAvailability {
+        AnalysisAvailability(saved:record.map(SavedAnalysisSummary.init),hasOlder:stale,running:thisRunning,hasTimedSource:!version.isEmpty && store.transcript?.cues.isEmpty == false,readError:lesson.flatMap{job.loadErrors[$0.id]})
+    }
+    private var unavailable: Bool { availability.reason != nil && (version.isEmpty || store.transcript?.cues.isEmpty != false) }
     private var buttonTitle: String {
         if thisRunning { return job.pauseRequested ? "正在收尾…" : "暂停" }
         if let pending { return pending.status == .failed ? "重试并继续…" : "继续生成…" }
@@ -122,7 +125,9 @@ struct AnalysisPanel: View {
                     }
                     }
                 } else if !thisRunning {
-                    ContentUnavailableView("按主题回顾这堂课", systemImage: "list.bullet.rectangle", description: Text("根据英文字幕整理中文总结与主题章节，保留英文术语。点击章节即可跳到讲解起点。"))
+                    ContentUnavailableView("未生成总结", systemImage: "list.bullet.rectangle", description: Text("根据英文字幕整理这堂课的主题与知识点。"))
+                    Button(buttonTitle) {confirming=true}.buttonStyle(.borderedProminent)
+                        .frame(maxWidth:.infinity)
                 } else { Spacer() }
             }
         }.padding(12)
@@ -266,6 +271,7 @@ struct AnalysisConfirmation: View {
     @ObservedObject var translation: TranslationJob
     let lessonID: UUID
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openSettings) private var openSettings
     @LPState private var proposed: AnalysisTaskState?
     @AppStorage("analysisAutomaticModel") private var automatic = false
     @LPState private var model = AnalysisPreferences.load().model
@@ -274,6 +280,7 @@ struct AnalysisConfirmation: View {
     @LPState private var resuming = false
     @LPState private var hadCompleted = false
     @LPState private var compactContinuation = false
+    @LPState private var files=false
     private var config: AnalysisConfig {
         var value=AnalysisConfig(model:model,effort:effort);value.protocolVersion=3
         value.resolvedModels=ResolvedModelPlan.analysis(value,automatic:automatic)
@@ -317,8 +324,9 @@ struct AnalysisConfirmation: View {
                 if hadCompleted { Text("新结果完成前，保留现在的总结与章节。").font(.caption) }
                 Text("遇到错误即暂停，不自动重试或更换模型。已发送的请求仍可能计费。")
                     .font(.caption).foregroundStyle(.secondary)
-                if !keyAvailability.configured(.openAI) { Text("请先在设置中保存 OpenAI Key。").font(.caption).foregroundStyle(.orange) }
-                if busy { Text("请等待正在进行的翻译、总结或连接测试结束。").font(.caption).foregroundStyle(.orange) }
+                if !keyAvailability.configured(.openAI) {HStack {Text("请在设置中保存 OpenAI Key。").font(.caption);Button("打开设置"){openSettings()}}}
+                if busy {Text(translation.testing ? "连接测试正在进行，完成后可生成总结。":"当前任务正在收尾，完成后可继续生成。").font(.caption).foregroundStyle(.orange)}
+                if TranslationModelCatalog.find(effective.model)==nil {HStack {Text("当前模型不在支持的模型目录中。").font(.caption);Button("打开设置"){openSettings()}}}
                 if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.red) }
                 HStack {
                     Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -329,22 +337,24 @@ struct AnalysisConfirmation: View {
                 }
             } else {
                 Text(message.isEmpty ? "正在读取英文字幕…" : message).font(.callout)
+                if !message.isEmpty {Button("本课文件…"){files=true}}
                 Button("关闭") { dismiss() }
             }
         }.padding(24).frame(width: 570)
+            .sheet(isPresented:$files){DataLocations(store:store,lessonID:lessonID)}
             .task {
-                await job.load(store: store, lessonID: lessonID)
                 do {
-                    if let error = job.loadErrors[lessonID] { throw Failure(error) }
-                    guard let lesson, let source = try store.repository?.read(lesson) else { throw Failure("没有英文字幕。") }
-                    let existing = job.exact(lessonID, version: source.version)
-                    hadCompleted = existing?.completed != nil
-                    if let saved = existing?.task {
-                        proposed = saved; model = saved.config.model; effort = saved.config.effort; resuming = true
-                    } else {
-                        proposed = AnalysisTaskState(config: config, plan: try AnalysisPlan.make(source))
-                    }
-                } catch { message = error.localizedDescription }
+                    guard let lesson,let root=store.repository?.root else {throw Failure("资料库不可用")}
+                    let chosen=config
+                    let work=Task.detached(priority:.userInitiated) {try PerformanceTrace.measure("analysis.confirmation.prepare"){try AnalysisPreparation.load(root:root,lesson:lesson,config:chosen)}}
+                    let result=try await withTaskCancellationHandler(operation:{try await work.value},onCancel:{work.cancel()})
+                    try Task.checkCancellation()
+                    guard store.library.lectures.first(where:{$0.id==lessonID})?.transcriptVersion==result.source.version else {throw Failure("字幕已改变，请重新打开确认窗口。")}
+                    hadCompleted=result.existing?.completed != nil
+                    proposed=result.task
+                    if result.existing?.task != nil {model=result.task.config.model;effort=result.task.config.effort;resuming=true}
+                } catch is CancellationError {} catch {message=error.localizedDescription}
+
             }
     }
     private func confirm() {

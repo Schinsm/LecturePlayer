@@ -24,7 +24,7 @@ import Testing
         backup.analyses = try Backup.analysisPayload([current, task])
         let bytes = try Codec.encode(backup); let restored = try Codec.decode(Backup.self, bytes)
         try restored.validate()
-        #expect(restored.schema == 4)
+        #expect(restored.schema == 6)
         #expect(restored.analyses == backup.analyses)
         #expect(restored.transcripts == backup.transcripts)
         #expect(restored.library.lectures.first?.state == backup.library.lectures.first?.state)
@@ -53,7 +53,7 @@ import Testing
         #expect(throws: (any Error).self) { try bad.validate() }
         bad = backup; bad.analyses = ["../unsafe": valid]
         #expect(throws: (any Error).self) { try bad.validate() }
-        bad = backup; bad.schema = 6
+        bad = backup; bad.schema = 7
         #expect(throws: (any Error).self) { try bad.validate() }
     }
 

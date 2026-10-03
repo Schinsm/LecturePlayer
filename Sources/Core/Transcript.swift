@@ -17,6 +17,8 @@ public struct TranslationVariant: Codable, Equatable, Sendable, Identifiable {
     public var task: TranslationTaskState?
     public var completedBatches: [String] = []
     public var sidecars: [String:String]?
+    public var generatedFiles: [GeneratedFileRecord]?
+    public var historicalFiles: [String:String]?
     public var fileStatus: String?
     public var fileInputKey: String?
     public init(id:String, service:TranslationService?) {self.id=id;self.service=service}
@@ -77,6 +79,11 @@ public struct Transcript: Codable, Equatable, Sendable {
     public func validate() throws {
         let ids=Set(cues.map(\.id))
         guard (schema==1 || schema==2), version==digest(original), ids.count==cues.count,cues.allSatisfy({$0.start>=0 && $0.end>$0.start && !$0.en.isEmpty}),legacyTranslations.keys.allSatisfy({ids.contains($0)}) else{throw Failure("字幕版本、时间或译文映射无效")}
+        for (id,variant) in variants ?? [:] {
+            let records=variant.generatedFiles ?? []
+            guard Set(records.map(\.format)).count==records.count,
+                  records.allSatisfy({$0.sourceVersion==version && $0.serviceID==id && $0.path.hasPrefix("/") && $0.checksum.count==64}) else {throw Failure("译文文件索引身份无效")}
+        }
         if schema==2 {guard let variants,!variants.isEmpty else{throw Failure("缺少译文版本")};for (id,v) in variants {guard id==v.id,(id=="legacy" && v.service==nil) || v.service?.rawValue==id,v.translations.keys.allSatisfy({ids.contains($0)}),v.task == nil || (v.task!.version==version && v.task!.ids.allSatisfy{ids.contains($0)}) else{throw Failure("译文版本映射无效")}}}
     }
 }

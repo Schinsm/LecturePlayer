@@ -80,8 +80,6 @@ import UniformTypeIdentifiers
             watchesEnabled = explicitRoot == nil && Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDisableAutomaticMaintenance") as? Bool != true
             fingerprints=MediaFingerprintCache(storage:root.appendingPathComponent("Cache/media-fingerprints.json"))
             repository = try Repository(root: root); repository?.onWriteFailure = {[weak self] in self?.storageFailed($0)}; library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
-            let upgradeSnapshot = root.appendingPathComponent("before-v087.json")
-            if !library.lectures.isEmpty, !FileManager.default.fileExists(atPath: upgradeSnapshot.path) { try repository!.writeRecoverySnapshot(library, to: upgradeSnapshot) }
             if watchesEnabled {
                 refreshPolicy=RefreshPolicy(rawValue:UserDefaults.standard.string(forKey:"directoryRefreshPolicy") ?? "automatic") ?? .automatic
                 lastDirectoryAttempt=UserDefaults.standard.object(forKey:refreshPreferenceKey) as? Date
@@ -95,7 +93,7 @@ import UniformTypeIdentifiers
             Task { [weak self] in await self?.translation.writer.observeFiles { [weak self] id,saved in
                 guard let self,let lesson=self.library.lectures.first(where:{$0.id==id}),lesson.transcriptVersion==saved.transcript.version else{return}
                 self.displayTranscript(saved.transcript,for:id)
-                self.updateLecture(id){if let files=saved.sidecars {$0.sidecars=files};$0.sidecarStatus=saved.fileStatus}
+                self.updateLecture(id){if let files=saved.sidecars {$0.sidecars=files};$0.sidecarStatus=saved.fileStatus;$0.generatedFilePaths=saved.currentFilePaths}
             }}
             directoryWatch.changed = { [weak self] in guard let self,self.refreshPolicy == .automatic else { return };self.refreshDirectory() }
             configureRefreshSchedule()

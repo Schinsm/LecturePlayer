@@ -43,6 +43,7 @@ public struct Backup: Codable, Sendable {
     public init(library: Library, transcripts: [String: Transcript], analyses: [String: LessonAnalysis]? = nil, processing: [ImportProcessingEntry]? = nil) {
         self.library = library; self.transcripts = transcripts; self.analyses = analyses; self.processing=processing
         if processing != nil || analyses?.values.contains(where:{$0.schema==2}) == true {schema=5}
+        if library.schema>=5 {schema=6}
     }
     public static func analysisPayload(_ records: [LessonAnalysis]) throws -> [String: LessonAnalysis] {
         var result: [String: LessonAnalysis] = [:]
@@ -54,10 +55,13 @@ public struct Backup: Codable, Sendable {
         return result
     }
     public func validate() throws {
-        guard (1...5).contains(schema) else { throw Failure("不支持的备份版本") }
+        guard (1...6).contains(schema) else { throw Failure("不支持的备份版本") }
         _ = try LibraryMigration.upgrade(library)
         for (key, transcript) in transcripts {
             try transcript.validate()
+            let records=(transcript.variants ?? [:]).values.flatMap{$0.generatedFiles ?? []}
+            guard records.isEmpty || schema>=6 else {throw Failure("译文文件索引需要备份格式 6")}
+            guard records.allSatisfy({$0.lessonID.uuidString==String(key.prefix(36))}) else {throw Failure("译文文件索引与课件不一致")}
             guard let id = UUID(uuidString: String(key.prefix(36))), key == "\(id)-\(transcript.version)" else { throw Failure("备份字幕标识不匹配") }
         }
         for lesson in library.lectures {

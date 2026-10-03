@@ -7,6 +7,7 @@ import Core
     @Published private(set) var translationErrors: [UUID:String]=[:]
     @Published private(set) var analyses: [String:SavedAnalysisSummary]=[:]
     @Published private(set) var analysisError: String?
+    @Published private(set) var analysisErrors:[UUID:String]=[:]
     private var tokens: [UUID:UUID]=[:]
     private var analysisLoad: Task<Void,Never>?
     private var loadedAnalysisRoot: URL?
@@ -15,7 +16,7 @@ import Core
 
     func reset() {
         generation=UUID(); tokens.removeAll(); translations.removeAll(); translationErrors.removeAll()
-        analysisLoad?.cancel(); analysisLoad=nil; loadedAnalysisRoot=nil; analyses.removeAll(); analysisError=nil
+        analysisLoad?.cancel(); analysisLoad=nil; loadedAnalysisRoot=nil; analyses.removeAll(); analysisError=nil;analysisErrors=[:]
     }
     func accept(_ source:Transcript,for id:UUID) {
         tokens[id]=nil
@@ -50,10 +51,11 @@ import Core
         analysisLoad=Task { [weak self] in
             do {
                 // One background pass per library, rather than decoding all analyses once per row.
-                let values=try await AnalysisRepository(root:root).all()
+                let inventory=try await AnalysisRepository(root:root).inventory()
+                let values=inventory.records
                 guard let self,self.generation==current,!Task.isCancelled else{return}
                 self.analyses=Dictionary(uniqueKeysWithValues:values.map { (AnalysisJob.key($0.lessonID,$0.sourceVersion),SavedAnalysisSummary($0)) })
-                self.analysisError=nil;self.loadedAnalysisRoot=root;self.analysisLoad=nil
+                self.analysisErrors=inventory.errors;self.analysisError=nil;self.loadedAnalysisRoot=root;self.analysisLoad=nil
             } catch {
                 guard let self,self.generation==current,!Task.isCancelled else{return}
                 self.analysisError=error.localizedDescription;self.loadedAnalysisRoot=root;self.analysisLoad=nil
@@ -66,15 +68,15 @@ import Core
         return analyses[AnalysisJob.key(lesson.id,version)]
     }
     func analysisIssue(_ lesson:Lecture,job:AnalysisJob)->String? {
-        job.loadErrors[lesson.id] ?? analysisError
+        job.loadErrors[lesson.id] ?? analysisErrors[lesson.id] ?? analysisError
     }
     func savedAnalysisLabel(_ lesson:Lecture,job:AnalysisJob)->String {
-        // A valid older snapshot remains usable, but must not hide a failed refresh.
-        if analysisIssue(lesson,job:job) != nil {return "总结状态不可用"}
-        if let summary=analysis(lesson,job:job) {return summary.label}
-        if hasOlderAnalysis(lesson,job:job) {return "总结待更新"}
-        return analysisLoaded && (translations[lesson.id]?.total ?? 0)>0 ? "总结待处理" : ""
+        availability(lesson,job:job).label
     }
+    func availability(_ lesson:Lecture,job:AnalysisJob,queued:Bool=false,queuePaused:Bool=false)->AnalysisAvailability {
+        AnalysisAvailability(saved:analysis(lesson,job:job),hasOlder:hasOlderAnalysis(lesson,job:job),queued:queued,running:job.isRunning(lesson.id),queuePaused:queuePaused,hasTimedSource:lesson.transcriptVersion != nil && translations[lesson.id]?.total != 0,readError:analysisIssue(lesson,job:job))
+    }
+
     func hasOlderAnalysis(_ lesson:Lecture,job:AnalysisJob)->Bool {
         analyses.values.contains {$0.lessonID==lesson.id && $0.version != lesson.transcriptVersion && $0.complete}
         || job.records.values.contains {$0.lessonID==lesson.id && $0.sourceVersion != lesson.transcriptVersion && $0.completed != nil}
@@ -112,11 +114,8 @@ struct LessonWorkStatus:View {
         return saved?.label(variant:lesson.selectedTranslationVariantID) ?? ""
     }
     private var summary:SavedAnalysisSummary? {snapshot.analysis(lesson,job:analysis)}
-    private var analysisLabel:String {
-        if analysisRunning {return analysis.pauseRequested || processing.paused ? "总结收尾中" : "总结生成中"}
-        if pendingQueue && processing.running && entry?.analysis != nil {return "总结排队中"}
-        return snapshot.savedAnalysisLabel(lesson,job:analysis)
-    }
+    private var availability:AnalysisAvailability {snapshot.availability(lesson,job:analysis,queued:pendingQueue && entry?.analysis != nil,queuePaused:!processing.running || processing.paused)}
+    private var analysisLabel:String {availability.label}
     private var detailText:String {
         var lines:[String]=[]
         if let saved,saved.total>0 {lines.append("当前译文：\(saved.completed(variant:lesson.selectedTranslationVariantID))/\(saved.total)")}
@@ -136,7 +135,12 @@ struct LessonWorkStatus:View {
     var body:some View {
         VStack(alignment:.leading,spacing:5) {
             if !translationLabel.isEmpty {statusRow(translationLabel,running:translationRunning,progress:record.map {Double($0.completed)/Double(max(1,$0.ids.count))})}
-            if !analysisLabel.isEmpty {statusRow(analysisLabel,running:analysisRunning,progress:summary?.progress)}
+            HStack(spacing:10) {
+                statusRow(analysisLabel,running:analysisRunning,progress:summary?.progress)
+                if availability.state == .notGenerated || availability.state == .oldSource {
+                    Button("生成总结…") {analysisConfirmation=true}.buttonStyle(.borderless).font(.caption)
+                }
+            }
             if translationRunning || analysisRunning || pendingQueue || (record.map {$0.state != "完成" && $0.state != "已取消"} ?? false) || summary?.taskStatus != nil || snapshot.translationErrors[lesson.id] != nil || snapshot.analysisIssue(lesson,job:analysis) != nil {
                 HStack(spacing:10) {
                     if processing.running && pendingQueue {Button("暂停") {processing.pause(store)}.disabled(processing.paused)}

@@ -57,7 +57,7 @@ struct V081AnalysisTests {
         record.schema=2;record.completed=AnalysisDocument(chapters:children,overview:[.init(text:"总结",chapterID:children[0].id)])
         record.completed!.topics=[AnalysisTopic(id:"topic",title:"主题",overview:"概述",subtopics:children)]
         backup=Backup(library:backup.library,transcripts:backup.transcripts,analyses:try Backup.analysisPayload([record]),processing:[ImportProcessingEntry(id:record.lessonID,translation:nil,analysis:AnalysisTaskState(config:config,plan:plan))])
-        try backup.validate();#expect(backup.schema==5)
+        try backup.validate();#expect(backup.schema==6)
         let decoded=try Codec.decode(Backup.self,Codec.encode(backup));try decoded.validate()
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("LP081-rollback-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:root)}

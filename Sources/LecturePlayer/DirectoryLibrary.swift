@@ -44,7 +44,9 @@ extension AppStore {
         scanning = true; rescanRequested = false; scanSummary = "正在扫描…"
         let generation = rootGeneration
         scanTask = Task {
+            let scanStarted=Date()
             defer {
+                PerformanceTrace.record("directory.refresh",Date().timeIntervalSince(scanStarted))
                 scanning = false; scanTask = nil
                 if watchesEnabled && !rescanRequested { UserDefaults.standard.set(scanSummary,forKey:refreshPreferenceKey+"-result") }
                 if rescanRequested { rescanRequested = false; refreshDirectory() }
@@ -100,7 +102,13 @@ extension AppStore {
                     selectedCourse = next.courses.first(where: { course in course.directoryPath.map { directory in visiblePath.map { DirectoryIndex.contains($0, in: directory) } ?? false } ?? false })?.id
                 }
                 if watchesEnabled && refreshPolicy == .automatic { directoryWatch.update([result.root, result.root.deletingLastPathComponent()] + result.directories) }
-                for item in library.lectures where item.subtitlePath != nil { saveVisibleTranslations(item.id,onlyIfNeeded:true) }
+                let fileChecks=library.lectures.filter{$0.subtitlePath != nil && $0.sidecarStatus?.contains("文件待保存") != true}
+                let repairIDs=await Task.detached(priority:.utility) {
+                    fileChecks.filter {item in
+                        item.sidecarStatus?.contains("等待生成文件") == true || (item.generatedFilePaths ?? []).contains {path in !FileManager.default.fileExists(atPath:path)}
+                    }.map(\.id)
+                }.value
+                for id in repairIDs {saveVisibleTranslations(id,onlyIfNeeded:true)}
                 if result.unstable && refreshPolicy == .automatic { directoryWatch.schedule() }
             } catch is CancellationError { scanSummary = "扫描已取消；显示上次结果" }
             catch { scanSummary = "刷新失败；显示上次结果"; scanIssues = [error.localizedDescription] }
@@ -142,7 +150,7 @@ extension AppStore {
                     let result=try await translation.writer.saveFiles(lesson:item,url:url,onlyIfNeeded:automatic)
                     guard library.lectures.first(where:{$0.id==id})?.transcriptVersion==version else{continue}
                     if current==id && transcript != result.transcript.viewing(item.selectedTranslationVariantID) {displayTranscript(result.transcript,for:id)}
-                    updateLecture(id){$0.sidecars=result.sidecars;$0.sidecarStatus=result.fileStatus}
+                    updateLecture(id){$0.sidecars=result.sidecars;$0.sidecarStatus=result.fileStatus;$0.generatedFilePaths=result.currentFilePaths}
                 }catch{storageFailed(error);fileSavePending[id]=nil;break}
             }
         }
@@ -209,7 +217,9 @@ extension AppStore {
                 let matches = files.filter { ImportPlanner.subtitles.contains($0.pathExtension.lowercased()) && !ImportPlanner.isGenerated($0) }.filter { (try? Data(contentsOf: $0)).map(digest) == version }
                 if matches.count == 1 { updateLecture(item.id) { $0.subtitlePath = matches[0].path } }
             }
-            saveVisibleTranslations(item.id,onlyIfNeeded:true)
+            if fileSavePending[item.id] != nil || item.sidecarStatus?.contains("等待生成文件")==true {
+                saveVisibleTranslations(item.id,onlyIfNeeded:true)
+            }
         }
     }
 }

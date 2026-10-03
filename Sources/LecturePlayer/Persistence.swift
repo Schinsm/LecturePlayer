@@ -35,6 +35,11 @@ import Core
             else if row.key.hasPrefix("l-") { library.lectures.append(try Codec.decode(Lecture.self, row.payload)) }
         }
         if library.schema < 4 {return try migrateLibrary(library)}
+        if library.schema == 4 {
+            try snapshotBeforeSchema5(library)
+            let next=try LibraryMigration.upgrade(library)
+            try save(next);return next
+        }
         try library.validate()
         return library
     }

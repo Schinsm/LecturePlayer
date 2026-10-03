@@ -31,13 +31,13 @@ extension Lecture {
 }
 public enum LibraryMigration {
     public static func upgrade(_ source: Library) throws -> Library {
-        guard source.schema == 1 || source.schema == 2 || source.schema == 3 || source.schema == 4 else { throw Failure("不支持的资料库版本 \(source.schema)") }
+        guard source.schema == 1 || source.schema == 2 || source.schema == 3 || source.schema == 4 || source.schema == 5 else { throw Failure("不支持的资料库版本 \(source.schema)") }
         var result = source
         if result.schema == 1 {
             for i in result.lectures.indices { result.lectures[i].sources = result.lectures[i].mediaSources }
             result.schema = 2
         }
-        result.schema = 4
+        result.schema = 5
         try result.validate(); return result
     }
 }
