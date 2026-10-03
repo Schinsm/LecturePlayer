@@ -379,8 +379,10 @@ struct AnalysisModelSettings: View {
                     ForEach(TranslationModelCatalog.find(model)?.supportedEfforts ?? [.none], id: \.rawValue) { Text($0.rawValue.capitalized).tag($0.rawValue) }
                 }.disabled(automatic)
             }
-            Text("使用已保存的 OpenAI Key。只在导入预览或章节页确认后生成；此设置不改变已确认任务，也不影响字幕翻译。")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("使用 OpenAI Key").font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup("生成设置说明") {
+                Text("确认生成时使用以上配置；已确认任务保留原配置。").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

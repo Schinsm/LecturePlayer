@@ -62,7 +62,7 @@ import Testing
         #expect(window.makeFirstResponder(button));#expect(button.visibility.revealed)
         let keys=PlayerKeys.KeysView();window.contentView?.addSubview(keys);var transportCalls=0;keys.action={_,_ in transportCalls += 1;return true}
         let space=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:window.windowNumber,context:nil,characters:" ",charactersIgnoringModifiers:" ",isARepeat:false,keyCode:49)!
-        #expect(keys.handle(space) != nil && transportCalls==0)
+        #expect(keys.handle(space) == nil && transportCalls==1)
         #expect(window.makeFirstResponder(nil));button.visibility.reset()
         button.setAccessibilityFocused(true);#expect(button.visibility.revealed)
         #expect(button.accessibilityLabel()=="隐藏转写与章节")

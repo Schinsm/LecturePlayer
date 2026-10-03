@@ -13,7 +13,7 @@ public struct TranscriptTimeline: Sendable {
         maximumEnds = cues.map { maximum = max(maximum, $0.end); return maximum }
     }
 
-    /// In a subtitle gap, keep the nearest preceding cue visible without highlighting it.
+    /// Scroll anchor may point to the first cue before playback reaches it.
     public func anchor(at seconds: Double, offset: Double) -> String? {
         anchor(at: seconds, mapper: SubtitleTimingMapper(offset: offset))
     }
@@ -25,6 +25,16 @@ public struct TranscriptTimeline: Sendable {
             if Double(cues[middle].start) <= milliseconds { low = middle + 1 } else { high = middle }
         }
         return low > 0 ? cues[low - 1].id : cues.first?.id
+    }
+
+    /// Reading position persists through gaps; timed video captions must use active().
+    public func readingFocus(at seconds: Double, mapper: SubtitleTimingMapper) -> [String] {
+        let current = active(at: seconds, mapper: mapper)
+        if !current.isEmpty { return current }
+        guard let ms = mapper.originalMilliseconds(at: seconds),
+              let first = cues.first, ms >= Double(first.start),
+              let previous = anchor(at: seconds, mapper: mapper) else { return [] }
+        return [previous]
     }
 
     public func active(at seconds: Double, offset: Double) -> [String] {

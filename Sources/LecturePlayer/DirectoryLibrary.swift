@@ -28,7 +28,7 @@ extension AppStore {
     }
     func selectDirectoryRoot() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.message = "选择独立总目录，内部按 学科 / Week 文件夹 放置视频与字幕。仅索引，不搬移源文件。"
+        panel.message = "选择存放视频与字幕的课程目录。"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         perform {
             rootGeneration = UUID()

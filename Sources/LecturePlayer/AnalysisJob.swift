@@ -25,6 +25,12 @@ import Core
     private var loadTokens: [UUID: UUID] = [:]
     private var lessonRevisions: [UUID: Int] = [:]
 
+    /// A restored library must not inherit records or delayed reads from the previous library.
+    func resetPresentation() {
+        guard !running else{return}
+        records=[:];loadErrors=[:];loadTokens=[:];lessonRevisions=[:];lessonStatuses=[:]
+        runningVersion=nil;status="";pauseRequested=false;revision += 1
+    }
     var running: Bool { runningLessonID != nil || !coordinatedLessons.isEmpty }
     static func key(_ id: UUID, _ version: String) -> String { "\(id.uuidString)-\(version)" }
     func exact(_ id: UUID, version: String) -> LessonAnalysis? { records[Self.key(id, version)] }

@@ -27,6 +27,7 @@ import UniformTypeIdentifiers
         }
     }
     private var memoryPressure: DispatchSourceMemoryPressure?
+    let lessonStatuses=LessonStatusPresentation()
     let usagePresentation=UsagePresentation()
     var usageCache:UsageDataset?
     var usageCacheToken=""
@@ -173,10 +174,11 @@ import UniformTypeIdentifiers
         transcript=transcript?.viewing(id)
     }
     func displayTranscript(_ value:Transcript, for id:UUID) {
+        if library.lectures.first(where:{$0.id==id})?.transcriptVersion==value.version {lessonStatuses.accept(value,for:id)}
         if current==id {transcript=value.viewing(library.lectures.first{$0.id==id}?.selectedTranslationVariantID ?? transcript?.variantID ?? "openAI")}
     }
     func back() { lessonLoadTask?.cancel(); lessonLoadID=UUID(); lessonLoading=false; pipPreferences.flush(); readerPresentation.flush(); captions.flush(); playback.close(); current = nil; transcript = nil; preparedReading=nil }
-    func saveTranscript(_ value: Transcript, lectureID: UUID) throws { try repository?.write(value, for: lectureID); if current == lectureID { transcript = value }; saveVisibleTranslations(lectureID) }
+    func saveTranscript(_ value: Transcript, lectureID: UUID) throws { try repository?.write(value, for: lectureID); displayTranscript(value,for:lectureID); saveVisibleTranslations(lectureID) }
     func addCourse(_ name: String) { let course = Course(name: name, order: library.courses.count); library.courses.append(course); selectedCourse = course.id; selectedFolder = nil; persist() }
     func addFolder(_ name: String) { guard let course = selectedCourse else { return }; library.folders.append(Folder(name: name, courseID: course, parentID: selectedFolder)); persist() }
     func importPair(video: URL, subtitle: URL?, title: String) throws {

@@ -21,6 +21,55 @@ import Core
     @Published private(set) var displaySizes: [UUID: CGSize] = [:]
     private var sizeObservers: [NSKeyValueObservation] = []
     private var sizeCache: [String: CGSize] = [:]
+    // Temporary probes prove that the *current* item has decoded a frame. A view
+    // can briefly retain readyForDisplay=true from its previous item.
+    private var firstFrameOutputs: [UUID: AVPlayerItemVideoOutput] = [:]
+    private var firstFrameItems: [UUID: AVPlayerItem] = [:]
+    private var displayedFrames: Set<UUID> = []
+    private var frameRecoveries: [UUID: UUID] = [:]
+    private var automaticFrameRecoveries: Set<UUID> = []
+    var displayGeneration: UUID { generation }
+    var canRecoverFirstFrame: Bool { ready && pendingSeek == nil && !synchronizing && correctionTask == nil }
+    func matchesDisplayBinding(sourceID: UUID, generation token: UUID, item: AVPlayerItem) -> Bool {
+        generation == token && firstFrameItems[sourceID] === item
+            && views.first(where: { $0.id == sourceID }).map { player(for: $0).currentItem === item } == true
+    }
+    func hasCurrentItemFrame(sourceID: UUID, generation token: UUID, item: AVPlayerItem) -> Bool {
+        guard matchesDisplayBinding(sourceID: sourceID, generation: token, item: item) else { return false }
+        if displayedFrames.contains(sourceID) { return true }
+        guard let output = firstFrameOutputs[sourceID], let source = views.first(where: { $0.id == sourceID }) else { return false }
+        let time = player(for: source).currentTime()
+        return time.seconds.isFinite && output.hasNewPixelBuffer(forItemTime: time)
+    }
+    func confirmDisplayedFrame(sourceID: UUID, generation token: UUID, item: AVPlayerItem) {
+        guard matchesDisplayBinding(sourceID: sourceID, generation: token, item: item), !displayedFrames.contains(sourceID) else { return }
+        displayedFrames.insert(sourceID)
+        if let output = firstFrameOutputs.removeValue(forKey: sourceID) { item.remove(output) }
+        PerformanceTrace.record("video.firstFrameReady", 1)
+    }
+    /// Recover only the affected video; do not call the public seek path, alter
+    /// completion records, or persist a synthetic progress change.
+    func recoverFirstFrame(sourceID: UUID, generation token: UUID, item: AVPlayerItem, manual: Bool = false) async -> Bool {
+        guard canRecoverFirstFrame, matchesDisplayBinding(sourceID: sourceID, generation: token, item: item),
+              let source = views.first(where: { $0.id == sourceID }), eligible(source, at: position), frameRecoveries[sourceID] == nil,
+              manual || !automaticFrameRecoveries.contains(sourceID) else { return false }
+        if !manual { automaticFrameRecoveries.insert(sourceID) }
+        let operation = seekGeneration, recovery = UUID(), p = player(for: source)
+        frameRecoveries[sourceID] = recovery
+        defer { if frameRecoveries[sourceID] == recovery { frameRecoveries[sourceID] = nil } }
+        let canonical = actualPosition.isFinite ? actualPosition : position
+        let local = max(0, min(localTime(source, canonical), lengths[sourceID] ?? 0))
+        let started = ProcessInfo.processInfo.systemUptime
+        PerformanceTrace.record("video.firstFrameRecoveryStarted", 1)
+        let success = await seekPlayer(p, to: local)
+        guard matchesDisplayBinding(sourceID: sourceID, generation: token, item: item), seekGeneration == operation else { return false }
+        // A user pause/seek changes seekGeneration and takes precedence. The
+        // current intent, rather than a captured rate, governs resuming audio.
+        if intentPlaying && !Task.isCancelled { p.rate = Float(targetSpeed) }
+        else { p.pause() }
+        PerformanceTrace.record("video.firstFrameRecoverySeconds", ProcessInfo.processInfo.systemUptime - started)
+        return success && !Task.isCancelled
+    }
     @Published var ready = false; @Published var playing = false;  @Published var duration = 0.0; @Published var error: String?
     @Published private(set) var volume: Double = 1
     @Published private(set) var views: [MediaSource] = []
@@ -84,6 +133,10 @@ import Core
                     self.lengths[source.id] = seconds
                     if hasAudio { self.audible.insert(source.id) }
                     let item = AVPlayerItem(asset: asset); item.audioTimePitchAlgorithm = .timeDomain
+                    let output = AVPlayerItemVideoOutput(pixelBufferAttributes: nil)
+                    output.suppressesPlayerRendering = false
+                    item.add(output)
+                    self.firstFrameOutputs[source.id] = output; self.firstFrameItems[source.id] = item
                     self.player(for: source).replaceCurrentItem(with: item)
                     for _ in 0..<250 {
                         if item.status != .unknown { break }; try await Task.sleep(for: .milliseconds(20))
@@ -161,7 +214,7 @@ import Core
         PerformanceTrace.record("playback.recovery", 1)
     }
     private func correctFollower(_ source: MediaSource) {
-        guard correctionTask == nil else { return }
+        guard correctionTask == nil, frameRecoveries[source.id] == nil else { return }
         if followerFailures[source.id,default:0] >= 3 { recoverOperation("次要画面持续不同步，已暂停。请检查媒体文件后重新播放。"); return }
         followerFailures[source.id,default:0] += 1
         let token = generation, operation = seekGeneration
@@ -219,7 +272,7 @@ import Core
     func pause() { waitingStarted=nil;seekGeneration = UUID(); pendingSeek = nil; synchronizing = false; correctionTask?.cancel(); correctionTask = nil; phase = .paused; intentPlaying = false; controlTask?.cancel(); for p in players { p.cancelPendingPrerolls(); p.currentItem?.cancelPendingSeeks(); p.pause() }; position = actualPosition; playing = false; waiting = false; persist() }
     func toggle() { guard ready else { return }; if naturallyEnded {intentPlaying=true;seek(0);return}; if !intentPlaying && !views.contains(where: { eligible($0, at: position) }) { error = "当前位置没有可播放的视角。请重新定位缺失文件，或跳到已有视角的时间范围。"; return }; if intentPlaying { pause() } else { intentPlaying = true; scheduleStart() } }
     private func scheduleStart() {
-        guard intentPlaying, !synchronizing else { return }
+        guard intentPlaying, !synchronizing, frameRecoveries.isEmpty else { return }
         synchronizing = true; phase = .prerolling; error = nil; let token = generation; let seekToken = seekGeneration
         controlTask = Task { [weak self] in
             guard let self else { return }
@@ -266,6 +319,8 @@ import Core
     func close() {
         waitingStarted=nil;beforeStart=[];error=nil;clock.detach(); correctionTask?.cancel(); correctionTask = nil; followerFailures.removeAll(); driftPolicy.reset(); phase = .idle
         sizeObservers.removeAll(); displaySizes.removeAll()
+        for (id, output) in firstFrameOutputs { firstFrameItems[id]?.remove(output) }
+        firstFrameOutputs.removeAll(); firstFrameItems.removeAll(); displayedFrames.removeAll(); frameRecoveries.removeAll(); automaticFrameRecoveries.removeAll()
         persist(); ready = false;naturallyEnded=false;naturalEndEligible=false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
         loadTask?.cancel(); loop?.cancel(); controlTask?.cancel(); loadTask = nil; loop = nil; controlTask = nil
         for p in players { p.cancelPendingPrerolls(); p.pause(); p.replaceCurrentItem(with: nil) }

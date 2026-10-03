@@ -79,12 +79,14 @@ struct ShortcutSettings:View {
     @ObservedObject private var shortcuts=PlaybackShortcuts.shared
     @LPState private var recording:PlaybackCommand?
     var body:some View {
-        Section("播放快捷键 · 仅应用内") {
+        Section("快捷键") {
             ForEach(PlaybackCommand.allCases) {command in
                 HStack {Text(command.title);Spacer();Button(shortcuts.key(command).label){recording=command}.help("修改"+command.title+"快捷键")}
             }
             Button("恢复默认快捷键"){shortcuts.reset()}
-            Text("点击转写或章节后仍可使用。搜索、备注和字幕编辑时保留正常输入；文字选中时方向键用于选区。切换到其他应用后不生效。").font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup("使用说明") {
+                Text("快捷键在应用内生效。编辑文字时使用正常输入；选中文字时方向键调整选区。").font(.caption).foregroundStyle(.secondary)
+            }
         }.sheet(item:$recording){command in ShortcutCapture(command:command,shortcuts:shortcuts)}
     }
 }

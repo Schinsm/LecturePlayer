@@ -34,11 +34,17 @@ struct PlayerKeys:NSViewRepresentable {
     func updateNSView(_ v:KeysView,context:Context){v.action=action;v.enabled=enabled}
     class KeysView:NSView {
         var action:((UInt16,NSEvent.ModifierFlags)->Bool)?;var monitor:Any?
+        private var menuTrackingDepth = 0
+        private var menuObservers: [NSObjectProtocol] = []
         var enabled = true {didSet {if enabled != oldValue {updateMonitor()}}}
         override func viewDidMoveToWindow(){super.viewDidMoveToWindow();updateMonitor()}
         private func updateMonitor() {
             if let monitor {NSEvent.removeMonitor(monitor);self.monitor=nil}
+            menuObservers.forEach(NotificationCenter.default.removeObserver); menuObservers=[]; menuTrackingDepth=0
             guard enabled,window != nil else{return}
+            for (name, tracking) in [(NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false)] {
+                menuObservers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main) { [weak self] _ in guard let self else{return};self.menuTrackingDepth=max(0,self.menuTrackingDepth + (tracking ? 1 : -1)) })
+            }
             monitor=NSEvent.addLocalMonitorForEvents(matching:.keyDown){[weak self] event in
                 guard let self else{return event}
                 return self.handle(event)
@@ -46,10 +52,10 @@ struct PlayerKeys:NSViewRepresentable {
         }
         func handle(_ event:NSEvent)->NSEvent? {
             guard enabled,let window,event.window === window,!isHiddenOrHasHiddenAncestor,window.attachedSheet == nil,NSApp.modalWindow == nil else{return event}
+            guard menuTrackingDepth == 0 else{return event}
             let responder=window.firstResponder
             if let anchor = SpeedAnchorButton.active, anchor.window === window {return event}
             if responder is PictureInPictureHandle && ([123,124,125,126].contains(event.keyCode) || ["+","=","-"].contains(event.characters ?? "")) {return event}
-            if responder is ReaderPaneToggle {return event}
             if let text=responder as? NSTextView {
                 if text.isEditable || text.hasMarkedText() {return event}
                 if text.selectedRange().length>0 && [123,124,125,126].contains(event.keyCode) {return event}
@@ -58,7 +64,7 @@ struct PlayerKeys:NSViewRepresentable {
             if event.isARepeat {return PlaybackShortcuts.shared.resolve(event.keyCode,event.modifierFlags) == nil ? event:nil}
             return action?(event.keyCode,event.modifierFlags.intersection(.deviceIndependentFlagsMask))==true ? nil : event
         }
-        deinit{if let monitor{NSEvent.removeMonitor(monitor)}}
+        deinit{if let monitor{NSEvent.removeMonitor(monitor)};menuObservers.forEach(NotificationCenter.default.removeObserver)}
     }
 }
 

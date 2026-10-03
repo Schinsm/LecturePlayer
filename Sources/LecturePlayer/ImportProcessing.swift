@@ -174,18 +174,3 @@ struct ImportAnalysisPreview {
         } catch {message=error.localizedDescription;store.error=message}
     }
 }
-struct ImportProcessingStatus:View {
-    @ObservedObject var job:ImportProcessingCoordinator
-    @ObservedObject var analysis:AnalysisJob
-    let store:AppStore;let id:UUID
-    var body:some View {
-        if let entry=job.entries.first(where:{$0.id==id}) {
-            HStack {
-                Text((entry.purpose == "chapters" ? "章节队列 · " : "导入处理 · ") + entry.status).font(.caption)
-                if entry.analysis != nil {Text(analysis.isRunning(id) ? analysis.status(for:id) : (analysis.exact(id,version:entry.analysis!.plan.sourceVersion)?.completed != nil ? "总结已完成" : "总结待处理")).font(.caption).foregroundStyle(.secondary)}
-                if job.running {Button("暂停全部") {job.pause(store)}}
-                else if entry.status != "完成" {Button("继续…") {job.resume(store)}}
-            }.buttonStyle(.borderless)
-        }
-    }
-}

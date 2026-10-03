@@ -64,11 +64,14 @@ struct Keychain {
     var authorized:[UUID]=[]
     @Published var states: [UUID:TranslationTaskState] = [:]
     func restore(_ store:AppStore) {
-        states=[:];authorized=[];lessonID=nil;status="";details=""
+        states=[:];authorized=[];lessonID=nil;status="";details="";store.lessonStatuses.reset();store.analysis.resetPresentation()
         for lesson in store.library.lectures {
-            if let source=try? store.repository?.read(lesson), var record = source.variants?.values.compactMap(\.task).sorted(by: { ($0.state != "完成" && $0.state != "已取消" ? 0 : 1) < ($1.state != "完成" && $1.state != "已取消" ? 0 : 1) }).first {
-                if record.state != "完成" && record.state != "已取消" { record.state="待恢复" }
-                states[lesson.id]=record;onState?(lesson.id,record)
+            if let source=try? store.repository?.read(lesson) {
+                store.lessonStatuses.accept(source,for:lesson.id)
+                if var record=source.variants?.values.compactMap(\.task).sorted(by: { ($0.state != "完成" && $0.state != "已取消" ? 0 : 1) < ($1.state != "完成" && $1.state != "已取消" ? 0 : 1) }).first {
+                    if record.state != "完成" && record.state != "已取消" {record.state="待恢复"}
+                    states[lesson.id]=record;onState?(lesson.id,record)
+                }
             }
         }
     }
@@ -211,7 +214,7 @@ struct Keychain {
         let saved=try await writer.commit(result:result,batch:batch,config:config,lesson:active,url:repo.transcriptURL(lecture.id,batch.sourceVersion),seconds:seconds,attemptID:attemptID,allowSave:active.transcriptVersion==batch.sourceVersion,deferFiles:deferFiles,queueSeconds:queueSeconds)
         usageRevision += 1
         if let record=saved.transcript.task {states[lecture.id]=record;onState?(lecture.id,record)}
-        if store.current==lecture.id && active.transcriptVersion==saved.transcript.version {store.displayTranscript(saved.transcript,for:lecture.id)}
+        if active.transcriptVersion==saved.transcript.version {store.displayTranscript(saved.transcript,for:lecture.id)}
         if active.transcriptVersion==saved.transcript.version {store.updateLecture(lecture.id){if let files=saved.sidecars{$0.sidecars=files};$0.sidecarStatus=saved.fileStatus}}
         return saved
     }
@@ -233,6 +236,7 @@ struct APISettings: View {
     @ObservedObject private var keyAvailability=KeychainAvailability.shared
     @ObservedObject var store:AppStore
     @ObservedObject var job:TranslationJob
+    var includesSpeed = true
     @AppStorage("translationAutomaticModel") var automaticModel=false
     @AppStorage("model") var model = TranslationModelCatalog.defaultID
     @AppStorage("effort") var effort = ReasoningEffort.none.rawValue
@@ -248,7 +252,7 @@ struct APISettings: View {
             Picker("翻译服务",selection:$service){ForEach(TranslationService.allCases,id: \.self){Text($0.title).tag($0.rawValue)}}
             if provider == .openAI {
                 Toggle("自动·均衡",isOn:$automaticModel)
-                if automaticModel {Text("字幕翻译：GPT-5.6 Luna · none；确认后固定，不自动升级。").font(.caption)}
+                if automaticModel {Text("GPT-5.6 Luna · 无推理").font(.caption)}
                 Picker("模型",selection:$model){if TranslationModelCatalog.find(model)==nil {Text(model+"（需检查）").tag(model)};ForEach(TranslationModelCatalog.models){Text($0.displayName).tag($0.id)}}.disabled(automaticModel)
                 if TranslationModelCatalog.find(model)?.supportsReasoning==true {Picker("推理强度",selection:$effort){ForEach(TranslationModelCatalog.find(model)?.supportedEfforts ?? [.none],id: \.self){Text($0.displayName).tag($0.rawValue)}}.disabled(automaticModel)}
             } else if provider == .azure {
@@ -261,22 +265,27 @@ struct APISettings: View {
                 if AzureRegion.selection(region) == "other" {
                     TextField("Azure 区域代码",text:$region).onSubmit{if let normalized=try? AzureRegion.normalize(region){region=normalized}}
                 }
-                Text("请选择创建 Azure 资源时使用的区域，与电脑所在地无关。").font(.caption)
+                Text("使用 Azure 资源页面中的区域。").font(.caption).foregroundStyle(.secondary)
                 if (try? AzureRegion.normalize(region)) == nil {Text("请输入有效区域代码，例如 australiaeast。").font(.caption).foregroundStyle(.red)}
-                Text("请使用公共 Translator F0 资源。F0 每月有 200 万字符额度；应用无法核验账户套餐或剩余额度。不会自动改用收费服务。").font(.caption).foregroundStyle(.secondary)
-                Link("Azure 套餐与价格",destination:URL(string:"https://azure.microsoft.com/en-us/pricing/details/translator/")!)
+                DisclosureGroup("Azure 配置帮助") {
+                    Text("支持公共 Translator 资源。F0 免费额度以账户套餐为准；应用用量不代表账户剩余额度。").font(.caption).foregroundStyle(.secondary)
+                    Link("Azure 套餐与价格",destination:URL(string:"https://azure.microsoft.com/en-us/pricing/details/translator/")!)
+                }
             }
             if provider == .deepL {
-                Text("仅支持 DeepL API Free，英文 → 简体中文。额度以账户为准；不自动切换付费端点。").font(.caption)
+                Text("DeepL API Free · 英文 → 简体中文").font(.caption).foregroundStyle(.secondary)
                 Button(loadingUsage ? "正在读取…" : "刷新 DeepL 账户用量") {loadingUsage=true;Task {defer{loadingUsage=false};do{let api=DeepLProvider(key:try Keychain.read(.deepL));account=try await api.accountUsage();status=""}catch{status=error.localizedDescription}}}.disabled(loadingUsage || !keyAvailability.configured(.deepL))
                 if let account {Text("账户已用 \(account.characters) / \(account.limit) 字符 · \(account.date.formatted())").font(.caption)}
             }
-            if provider == .apple {Text("使用设备语言模型，无云 API 费用。首次翻译可能需要在系统提示中下载英文和简体中文资源。macOS 15 起可用；缺少资源或失败时不会改用云服务。").font(.caption)}
+            if provider == .apple {
+                Text("设备上翻译 · macOS 15 及以上").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("语言资源") {Text("首次使用时，按系统提示下载英文和简体中文资源。").font(.caption)}
+            }
             if provider.needsKey {
-            SecureField("API Key（仅存 Keychain）",text:$key)
+            SecureField("API Key",text:$key).help("保存在本机钥匙串")
             HStack {
-                Button("保存 Key"){do{try Keychain.save(key.trimmingCharacters(in:.whitespacesAndNewlines),provider:provider);key="";keyRevision=UUID();status="已保存"}catch{status=error.localizedDescription}}.disabled(key.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                Button("删除 Key"){do{try Keychain.remove(provider);keyRevision=UUID();status="已删除"}catch{status=error.localizedDescription}}
+                Button("保存 Key"){do{try Keychain.save(key.trimmingCharacters(in:.whitespacesAndNewlines),provider:provider);key="";keyRevision=UUID();status=""}catch{status=error.localizedDescription}}.disabled(key.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                Button("删除 Key"){do{try Keychain.remove(provider);keyRevision=UUID();status=""}catch{status=error.localizedDescription}}
                 Text(keyAvailability.values[provider] == nil ? "正在检查…" : keyAvailability.configured(provider) ? "已配置" : "未配置").foregroundStyle(.secondary)
             }
             }
@@ -284,10 +293,14 @@ struct APISettings: View {
             ServiceTestControls(store:store,job:job,config:TranslationPreferences.load(.standard),unsavedKey:!key.isEmpty,keyRevision:keyRevision)
         }
         .onChange(of:service){_,_ in key="";status="";account=nil}
-        Section("速度") {
-            Toggle("加速翻译（最多两个请求）",isOn:$accelerated).disabled(provider != .openAI)
-            Text("默认逐组处理。加速仅用于 OpenAI；暂停后等待已发送请求保存，它们仍可能计费。Azure 按免费套餐速率调度。").font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("高级") {Toggle("逐条处理字幕（较慢）",isOn:$single).disabled(provider != .openAI);Text("只影响新任务；已有任务继续使用确认时的服务、模型和范围。").font(.caption)}
+        if includesSpeed {
+            Section("速度") {
+                Toggle("加速翻译",isOn:$accelerated).disabled(provider != .openAI).help("OpenAI 最多同时处理两个请求")
+                DisclosureGroup("高级") {
+                    Toggle("逐条处理字幕",isOn:$single).disabled(provider != .openAI)
+                    Text("配置用于新任务。暂停时会保存已发出请求的结果；这些请求仍可能计费。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }

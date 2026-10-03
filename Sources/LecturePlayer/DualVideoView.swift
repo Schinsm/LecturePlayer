@@ -26,6 +26,26 @@ struct VideoCanvas: NSViewRepresentable {
         let videos = [AVPlayerView(), AVPlayerView()]
         let handle = PictureInPictureHandle()
         let messages = [NSTextField(wrappingLabelWithString: ""), NSTextField(wrappingLabelWithString: "")]
+        let recoveryButtons = [NSButton(title: "恢复画面", target: nil, action: nil), NSButton(title: "恢复画面", target: nil, action: nil)]
+        private weak var playback: Playback?
+        private var baseMessages = ["", ""]
+        private var frameBindings: [Int: FrameBinding] = [:]
+        private var frameTimer: Timer?
+        private var windowObservers: [NSObjectProtocol] = []
+        private var sampleScheduled = false
+        private final class FrameBinding {
+            let sourceID: UUID, generation: UUID, identity = UUID()
+            let createdAt = ProcessInfo.processInfo.systemUptime
+            let item: AVPlayerItem
+            var state: VideoFirstFrameState
+            var observation: NSKeyValueObservation?
+            var recovery: Task<Void, Never>?
+            init(sourceID: UUID, generation: UUID, item: AVPlayerItem) {
+                self.sourceID = sourceID; self.generation = generation; self.item = item
+                state = VideoFirstFrameState(generation: generation, binding: identity)
+            }
+            deinit { recovery?.cancel() }
+        }
         var sizes: [UUID: CGSize] = [:]
         var preferences: PictureInPicturePreferences?
         private var subscription: AnyCancellable?
@@ -41,6 +61,11 @@ struct VideoCanvas: NSViewRepresentable {
                 message.drawsBackground = true; message.font = .systemFont(ofSize: 12)
                 message.isSelectable = false; message.isHidden = true; message.wantsLayer = true
                 addSubview(message)
+                let button = recoveryButtons[i]; button.bezelStyle = .rounded
+                button.target = self; button.action = #selector(retryFirstFrame(_:)); button.tag = i
+                button.isHidden = true; button.wantsLayer = true
+                button.setAccessibilityLabel(sourceLabel(i) + "恢复画面")
+                addSubview(button)
             }
             addSubview(handle); handle.isHidden = true
             handle.move = { [weak self] dx, dy, keyboard in self?.moveInset(dx: dx, dy: dy, keyboard: keyboard) }
@@ -49,6 +74,7 @@ struct VideoCanvas: NSViewRepresentable {
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
         func configure(_ playback: Playback, layout: VideoLayout, swapped: Bool, preferences: PictureInPicturePreferences) {
+            self.playback = playback
             if self.preferences !== preferences {
                 self.preferences?.flush(); self.preferences = preferences
                 subscription = preferences.$value.sink { [weak self] _ in
@@ -59,17 +85,135 @@ struct VideoCanvas: NSViewRepresentable {
             sizes = playback.displaySizes
             sources = playback.views; mode = layout; self.swapped = swapped
             for i in videos.indices {
-                guard i < sources.count else { videos[i].isHidden = true; continue }
+                guard i < sources.count else { videos[i].isHidden = true; frameBindings[i] = nil; continue }
                 let source = sources[i], player = playback.player(for: source)
                 if videos[i].player !== player { videos[i].player = player }
                 videos[i].setAccessibilityLabel(source.role.rawValue + "视频")
-                messages[i].stringValue = playback.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
+                bindFirstFrame(index: i, source: source, playback: playback)
+                baseMessages[i] = playback.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
                     playback.ended.contains(source.id) ? "该视角已结束" : playback.isBeforeStart(source) ? "该视角尚未开始" : ""
             }
-            needsLayout = true
+            needsLayout = true; scheduleFrameSample()
+        }
+        private func sourceLabel(_ index: Int) -> String { index < sources.count ? sources[index].role.rawValue : "视频" }
+        private func bindFirstFrame(index: Int, source: MediaSource, playback: Playback) {
+            guard let item = videos[index].player?.currentItem else { frameBindings[index] = nil; return }
+            if let old = frameBindings[index], old.generation == playback.displayGeneration, old.sourceID == source.id, old.item === item { return }
+            let binding = FrameBinding(sourceID: source.id, generation: playback.displayGeneration, item: item)
+            frameBindings[index] = binding
+            let identity = binding.identity
+            binding.observation = videos[index].observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.frameBindings[index]?.identity == identity else { return }
+                    self.scheduleFrameSample()
+                }
+            }
+        }
+        private func scheduleFrameSample() {
+            guard !sampleScheduled else { return }; sampleScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }; self.sampleScheduled = false; self.sampleFirstFrames()
+            }
+        }
+        private func sampleFirstFrames() {
+            guard let playback else { stopFrameTimer(); return }
+            let now = ProcessInfo.processInfo.systemUptime
+            var watch = false
+            for i in videos.indices {
+                guard let binding = frameBindings[i], i < sources.count,
+                      playback.matchesDisplayBinding(sourceID: binding.sourceID, generation: binding.generation, item: binding.item) else {
+                    messages[i].stringValue = i < sources.count ? baseMessages[i] : ""
+                    recoveryButtons[i].isHidden = true; continue
+                }
+                let view = videos[i]
+                let mounted = window?.isVisible == true && window?.isMiniaturized == false
+                    && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor && !view.isHidden
+                    && view.bounds.width > 1 && view.bounds.height > 1 && !visibleRect.isEmpty
+                let usable = mounted && baseMessages[i].isEmpty
+                let eligible = usable && playback.canRecoverFirstFrame
+                let decoded = eligible && playback.hasCurrentItemFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item)
+                let ready = view.isReadyForDisplay && decoded
+                let old = binding.state.status
+                let recover = binding.state.observe(generation: binding.generation, binding: binding.identity, eligible: eligible, hasFrame: ready, now: now)
+                if ready {
+                    playback.confirmDisplayedFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item)
+                }
+                if old != binding.state.status {
+                    PerformanceTrace.record("video.presentationState", Double(stateNumber(binding.state.status)))
+                    if binding.state.status == .ready { PerformanceTrace.record("video.firstFrameSeconds", now - binding.createdAt) }
+                }
+                if recover { recoverFrame(index: i, binding: binding) }
+                let text: String
+                switch binding.state.status {
+                case .loading: text = "正在加载画面…"
+                case .recovering: text = "正在恢复画面…"
+                default: text = ""
+                }
+                messages[i].stringValue = baseMessages[i].isEmpty ? text : baseMessages[i]
+                recoveryButtons[i].isHidden = !usable || binding.state.status != .failed
+                recoveryButtons[i].isEnabled = binding.recovery == nil
+                recoveryButtons[i].setAccessibilityLabel(sourceLabel(i) + "恢复画面")
+                watch = watch || (usable && binding.state.status != .ready && binding.state.status != .failed)
+            }
+            positionFrameMessages()
+            if watch && frameTimer == nil {
+                let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in self?.sampleFirstFrames() }
+                RunLoop.main.add(timer, forMode: .common); frameTimer = timer
+            } else if !watch { stopFrameTimer() }
+        }
+        private func stateNumber(_ state: VideoFirstFrameState.Status) -> Int {
+            switch state { case .idle: return 0; case .waiting: return 1; case .loading: return 2; case .recovering: return 3; case .ready: return 4; case .failed: return 5 }
+        }
+        private func recoverFrame(index: Int, binding: FrameBinding, manual: Bool = false) {
+            guard let playback, binding.recovery == nil else { return }
+            binding.recovery = Task { [weak self, weak binding, weak playback] in
+                guard let binding, let playback else { return }
+                let result = await playback.recoverFirstFrame(sourceID: binding.sourceID, generation: binding.generation, item: binding.item, manual: manual)
+                guard let self, self.frameBindings[index]?.identity == binding.identity else { return }
+                binding.recovery = nil; binding.state.recoveryFinished(success: result)
+                self.sampleFirstFrames()
+            }
+        }
+        @objc private func retryFirstFrame(_ sender: NSButton) {
+            guard let binding = frameBindings[sender.tag], playback?.canRecoverFirstFrame == true,
+                  binding.state.retry(now: ProcessInfo.processInfo.systemUptime) else { return }
+            recoverFrame(index: sender.tag, binding: binding, manual: true); sampleFirstFrames()
+        }
+        private func stopFrameTimer() { frameTimer?.invalidate(); frameTimer = nil }
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let local = convert(point, from: superview)
+            // The PiP drag surface covers the inset. Its recovery action must
+            // remain clickable without turning a recovery click into a drag.
+            for button in recoveryButtons where !button.isHidden && button.frame.contains(local) {
+                return button.hitTest(local)
+            }
+            return super.hitTest(point)
+        }
+        private func positionFrameMessages() {
+            for i in videos.indices {
+                let view = videos[i], message = messages[i], button = recoveryButtons[i]
+                message.isHidden = view.isHidden || message.stringValue.isEmpty
+                if !view.isHidden {
+                    let frame = view.frame, width = max(0, frame.width - 16)
+                    let height = message.cell?.cellSize(forBounds: CGRect(x: 0, y: 0, width: width, height: 100)).height ?? 40
+                    message.frame = CGRect(x: frame.midX - width / 2, y: frame.midY - height / 2, width: width, height: height)
+                    button.frame = CGRect(x: frame.midX - 48, y: frame.midY - 15, width: 96, height: 30)
+                } else { button.isHidden = true }
+                message.layer?.zPosition = 2; button.layer?.zPosition = 4
+            }
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            windowObservers.forEach { NotificationCenter.default.removeObserver($0) }; windowObservers.removeAll()
+            if let window {
+                for event in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification] {
+                    windowObservers.append(NotificationCenter.default.addObserver(forName: event, object: window, queue: .main) { [weak self] _ in self?.scheduleFrameSample() })
+                }
+                scheduleFrameSample()
+            } else { stopFrameTimer() }
         }
         override func layout() {
-            super.layout(); guard !sources.isEmpty else { videos.forEach { $0.isHidden = true }; messages.forEach { $0.isHidden = true }; handle.isHidden = true; return }
+            super.layout(); guard !sources.isEmpty else { videos.forEach { $0.isHidden = true }; messages.forEach { $0.isHidden = true }; recoveryButtons.forEach { $0.isHidden = true }; handle.isHidden = true; stopFrameTimer(); return }
             let screen = sources.firstIndex { $0.role == .screen } ?? 0
             let camera = sources.firstIndex { $0.role == .camera } ?? 0
             let secondary = swapped ? screen : camera
@@ -92,6 +236,7 @@ struct VideoCanvas: NSViewRepresentable {
             handle.wantsLayer = true; handle.layer?.zPosition = 3
             handle.isHidden = mode != .inset || sources.count != 2 || frames[secondary] == nil
             if !handle.isHidden, let frame = frames[secondary] { handle.frame = frame }
+            positionFrameMessages(); scheduleFrameSample()
         }
         private var secondaryAspect: CGFloat? {
             guard sources.count == 2 else { return nil }
@@ -113,9 +258,10 @@ struct VideoCanvas: NSViewRepresentable {
             preferences.preview(next); layout(); if keyboard { preferences.saveSoon() }
         }
         override func viewWillMove(toWindow newWindow: NSWindow?) {
-            if newWindow == nil { preferences?.flush() }
+            if newWindow == nil { preferences?.flush(); stopFrameTimer() }
             super.viewWillMove(toWindow: newWindow)
         }
+        deinit { frameTimer?.invalidate(); windowObservers.forEach { NotificationCenter.default.removeObserver($0) } }
     }
 }
 struct LayoutMenu: View {

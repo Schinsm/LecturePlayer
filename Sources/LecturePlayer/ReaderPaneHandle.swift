@@ -113,6 +113,11 @@ final class ReaderPaneToggle:NSButton {
     deinit {NSWorkspace.shared.notificationCenter.removeObserver(self)}
     private func updateLabel() {let text=readerVisible ? "隐藏转写与章节":"显示转写与章节";toolTip=text;setAccessibilityLabel(text)}
     @objc private func activate() {toggle?()}
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else {return false}
+        performClick(nil)
+        return true
+    }
     @objc private func accessibilitySettingsChanged() {needsDisplay=true;layer?.removeAllAnimations();layer?.opacity=visibility.revealed ? 1:0}
     private func reveal(_ show:Bool) {
         needsDisplay=true
@@ -132,7 +137,10 @@ final class ReaderPaneToggle:NSButton {
     override func mouseDown(with event:NSEvent) {mouseActivation=true;defer{mouseActivation=false};super.mouseDown(with:event)}
     override func keyDown(with event:NSEvent) {
         visibility.focus(true)
-        if event.keyCode==49 || event.keyCode==36 {performClick(nil)}else{super.keyDown(with:event)}
+        // Space belongs to playback, including while the media is still loading.
+        // Return and the accessibility press action remain available for this button.
+        if event.keyCode==49 {return}
+        if event.keyCode==36 {performClick(nil)}else{super.keyDown(with:event)}
     }
     override func hitTest(_ point:NSPoint)->NSView? {
         guard visibility.revealed else{return nil}

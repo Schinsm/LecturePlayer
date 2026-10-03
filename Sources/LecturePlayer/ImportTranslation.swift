@@ -29,19 +29,3 @@ extension TranslationJob {
         if !accepted.isEmpty {launch(store:store,ids:accepted,provider:provider)}
     }
 }
-struct LessonTranslationStatus:View {
-    @ObservedObject var job:TranslationJob
-    let id:UUID;let store:AppStore
-    @LPState private var confirming=false
-    var body:some View {
-        if let record=job.states[id] {
-            HStack {
-                Text("本次翻译 · \(record.state) · \(record.completed)/\(record.ids.count)").font(.caption).foregroundStyle(.secondary)
-                if record.state != "完成" && record.state != "已取消" {
-                    if !job.busy {Button("继续翻译…") {store.updateLecture(id){$0.selectedTranslationVariantID=record.variantID};confirming=true}.font(.caption)}
-                    Button(job.running ? "暂停队列" : "取消任务") {job.cancelQueued(id,store:store)}.font(.caption)
-                }
-            }.sheet(isPresented:$confirming){TranslationConfirmation(store:store,job:job,lessonID:id)}
-        }
-    }
-}

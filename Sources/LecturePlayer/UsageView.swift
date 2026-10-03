@@ -30,7 +30,7 @@ struct TranslationHistory:View {
     @LPState private var purpose="all"
     private var filter:UsageFilter {UsageFilter(period:period,service:service,model:model,lesson:lesson,purpose:purpose)}
     var body:some View {
-        Section("用量 · 仅本应用记录") {
+        Section("应用用量") {
             Picker("时间",selection:$period){ForEach(UsagePeriod.allCases,id: \.self){Text($0.rawValue).tag($0)}}.pickerStyle(.segmented)
             Picker("服务",selection:$service){Text("全部服务").tag("all");ForEach(TranslationService.allCases,id: \.self){Text($0.title).tag($0.rawValue)}}
             Picker("模型",selection:$model){Text("全部模型").tag("all");ForEach(presentation.snapshot.models,id: \.self){Text($0).tag($0)}}
@@ -40,10 +40,13 @@ struct TranslationHistory:View {
             HStack {metric("请求",String(summary.requests));Divider();metric("成功 / 失败 / 未记录", "\(presentation.snapshot.succeeded) / \(presentation.snapshot.failed) / \(presentation.snapshot.unknown)");Divider();metric("已知用量估算",String(format:"$%.4f",summary.usd))}.frame(height:55)
             UsageCharts(snapshot:presentation.snapshot,period:period)
             Text("OpenAI：输入 \(summary.input) · 输出 \(summary.output) tokens").font(.callout)
-            Text("其中缓存输入 \(summary.cached) · 输出中的推理 \(summary.reasoning)；不重复累加。历史未记录的细分不计入以上细分数。").font(.caption).foregroundStyle(.secondary)
+            Text("缓存输入 \(summary.cached) · 推理输出 \(summary.reasoning)").font(.caption).foregroundStyle(.secondary)
             Text("云翻译字符：服务确认 \(summary.characters) 字符；另有本地估算 \(summary.estimatedCharacters) 字符。").font(.callout)
             Text("Apple 本机：处理 \(summary.localCharacters) 字符，无云 API 费用。").font(.caption)
-            Text("\(summary.unknown) 次请求用量不完整或未知，可能已计费。费用为 USD 估算，沿用请求时参考单价，未计未记录的缓存优惠。不是账户账单或剩余额度；日期按本机时区。").font(.caption).foregroundStyle(.secondary)
+            if summary.unknown > 0 {Text("\(summary.unknown) 次请求用量不完整或未知").font(.caption).foregroundStyle(.secondary)}
+            DisclosureGroup("统计说明") {
+                Text("费用按请求时单价估算，未知用量可能另有费用。缓存输入和推理输出是细分，不重复累加；历史缺失字段不补算。这里只统计本应用，日期按本机时区。").font(.caption).foregroundStyle(.secondary)
+            }
             HStack {Link("OpenAI 账户用量",destination:URL(string:"https://platform.openai.com/usage")!);Link("Azure 账户用量",destination:URL(string:"https://portal.azure.com/")!)}
             if !error.isEmpty {Text(error).foregroundStyle(.red).font(.caption)}
         }

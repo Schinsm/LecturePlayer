@@ -23,6 +23,7 @@ struct RootView: View {
     @ObservedObject var store: AppStore
     @AppStorage("appearance") var appearance="系统"
     @LPState private var importing = false
+    @ObservedObject private var onboarding=OnboardingPresentation.shared
     @LPState private var dropped:[URL] = []
     var body: some View {
         Group { if store.fatal { ContentUnavailableView("无法打开资料库", systemImage:"exclamationmark.triangle",description:Text(store.error ?? "")) } else if store.current != nil { PlayerPage(store:store) } else { LibraryPage(store:store, importing:$importing) } }
@@ -33,6 +34,8 @@ struct RootView: View {
             } }
             .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in store.refreshIfDue() }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for:NSWorkspace.didWakeNotification)) { _ in store.refreshIfDue() }
+            .onAppear { if !store.fatal { onboarding.presentIfNeeded(library:store.library) } }
+            .sheet(isPresented:$onboarding.showing) { OnboardingView(store:store) }
             .sheet(isPresented: $store.showingLocations) { DataLocations(store: store) }
             .sheet(isPresented:$importing) { ImportView(store:store, initialURLs:dropped) }
             .dropDestination(for:URL.self) {urls,_ in guard store.current == nil,(store.selectedCourse != nil || store.library.directoryRoot != nil) else{return false};dropped=urls;importing=true;return true}
@@ -63,11 +66,11 @@ struct LibraryPage: View {
             DirectorySidebar(navigation:navigation)
         } detail: {
             VStack(alignment: .leading, spacing: 14) {
-                if !store.scanIssues.isEmpty { DisclosureGroup("扫描详情（\(store.scanIssues.count)）") { ScrollView { Text(store.scanIssues.joined(separator: "\n")).font(.caption).textSelection(.enabled) }.frame(maxHeight: 100) } }
-                if !store.pendingFiles.isEmpty { Button("\(navigation.index.pending.count) 堂待确认 · 打开导入预览") { importing = true } }
-                if store.selectedCourse == nil && store.unlinkedCount > 0 { Text("旧课件保留在这里。把文件放入课程总目录后刷新，或在课件详情关联已移动的视频；进度和译文不会删除。").font(.caption).foregroundStyle(.secondary) }
+                if !store.scanIssues.isEmpty { DisclosureGroup("扫描遇到问题") { ScrollView { Text(store.scanIssues.joined(separator: "\n")).font(.caption).textSelection(.enabled) }.frame(maxHeight: 100) } }
+                if !store.pendingFiles.isEmpty { Button("导入课件…") { importing = true } }
+                if store.selectedCourse == nil && store.unlinkedCount > 0 { Text("在课件详情中重新关联已移动的视频。").font(.caption).foregroundStyle(.secondary) }
                 HStack {
-                    Button("全选当前列表") {selectedLessons.formUnion(items.map(\.id))}.disabled(items.isEmpty)
+                    Button("全选") {selectedLessons.formUnion(items.map(\.id))}.disabled(items.isEmpty)
                     if !selectedLessons.isEmpty {
                         Text("已选 \(selectedLessons.count) 堂").font(.caption)
                         Button("清除选择") {selectedLessons.removeAll()}
@@ -85,7 +88,7 @@ struct LibraryPage: View {
                 } else {
                 List {
                 ForEach(candidates, id: \.self) { group in
-                    HStack { VStack(alignment: .leading) { Text(group[0].deletingPathExtension().lastPathComponent); Text("待导入 · \(group.count) 路视频 · \(group[0].deletingLastPathComponent().lastPathComponent)").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("预览") { importing = true } }
+                    HStack { VStack(alignment: .leading) { Text(group[0].deletingPathExtension().lastPathComponent); Text(group[0].deletingLastPathComponent().lastPathComponent).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("预览") { importing = true } }
                 }
                 ForEach(items) { item in
                     HStack {
@@ -94,8 +97,7 @@ struct LibraryPage: View {
                         VStack(alignment:.leading,spacing:6) {
                         Button { store.open(item.id) } label: { VStack(alignment: .leading, spacing: 6) { Text(item.title).font(.headline); Text("\(timeLabel(item.state.position)) / \(timeLabel(item.duration)) · \(item.mediaSources.count) 路视频").foregroundStyle(.secondary) } }.buttonStyle(.plain)
                         if item.duration>0 {ProgressView(value:min(item.duration,item.state.position),total:item.duration).frame(width:160).tint(.accentColor)}
-                        LessonTranslationStatus(job:store.translation,id:item.id,store:store)
-                        ImportProcessingStatus(job:store.processing,analysis:store.analysis,store:store,id:item.id)
+                        LessonWorkStatus(store:store,lesson:item)
                         }
                         if navigation.missing.contains(item.id) { Button("缺失视角 · 重新关联") { details = LessonSelection(ids: [item.id]) }.font(.caption).foregroundStyle(.orange) }
                         if store.scanConflicts[item.id] != nil { Button("归属冲突") { store.chooseDirectory(item.id) } }
@@ -110,12 +112,11 @@ struct LibraryPage: View {
                 }
                 }.listStyle(.plain)
                 }
-                HStack {if store.scanning {ProgressView().controlSize(.small)};Text(store.scanSummary).font(.caption).foregroundStyle(.secondary);Spacer()}.padding(.top,4)
             }.padding(20)
         }.navigationTitle(store.library.folders.first{$0.id==store.selectedFolder}?.name ?? store.library.courses.first{$0.id==store.selectedCourse}?.name ?? "课程库")
         .toolbar(removing: .sidebarToggle).toolbar {
             ToolbarItem {TextField("搜索课件",text:$search).textFieldStyle(.roundedBorder).frame(width:210)}
-            ToolbarItem {Button {store.refreshDirectory()} label:{Image(systemName:"arrow.clockwise")}.help("刷新课程目录").accessibilityLabel("刷新课程目录").disabled(store.scanning || store.library.directoryRoot==nil)}
+            ToolbarItem {Button {store.refreshDirectory()} label:{Group {if store.scanning {ProgressView().controlSize(.small)} else {Image(systemName:"arrow.clockwise")}}.frame(width:18,height:18)}.help("刷新课程目录").accessibilityLabel("刷新课程目录").disabled(store.scanning || store.library.directoryRoot==nil)}
             ToolbarItem(placement: .navigation) {
                 Button { visibility = visibility == .detailOnly ? .all : .detailOnly } label: { Image(systemName: "sidebar.left") }.help("显示或隐藏课程目录").accessibilityLabel("显示或隐藏课程目录")
             }
@@ -350,40 +351,52 @@ struct ScrollIntent: NSViewRepresentable {
         deinit {if let monitor {NSEvent.removeMonitor(monitor)}}
     }
 }
-struct SettingsView: View {
-    @AppStorage("appearance") var appearance="系统"; @AppStorage("rewind") var rewind=false; @AppStorage("defaultSpeed") var speed=1.0; @AppStorage("lineSpacing") var spacing=5.0; @AppStorage("fontSize") var font=17.0
-    var body: some View { Form {Text("Lecture Player 设置").font(.title2); Picker("外观",selection:$appearance){ForEach(["系统","浅色","深色"],id:\.self){Text($0)}};Toggle("继续前回退 3 秒",isOn:$rewind);Picker("新回放默认倍速",selection:$speed){ForEach([0.75,1,1.25,1.5,1.75,2,2.5],id:\.self){Text("\($0.formatted())×").tag($0)}};Slider(value:$font,in:12...32){Text("转写字号")};Slider(value:$spacing,in:0...16){Text("转写行距")};Text("已有回放保留各自的倍速。启动保持暂停。").foregroundStyle(.secondary)} }
-}
 
 struct TranslationControls:View {
-    @ObservedObject var store:AppStore;@ObservedObject var job:TranslationJob;var query:String
+    @ObservedObject var store:AppStore
+    @ObservedObject var job:TranslationJob
+    var query:String
     @LPState private var confirming=false
-    var total:Int {store.transcript?.cues.count ?? 0}
-    var count:Int {store.transcript?.translatedCount ?? 0}
-    var label:String {
-        if total==0 {return "添加英文字幕…"}
-        if store.transcript?.variantID=="legacy" {return "历史译文"}
-        if count==total {return "中文已完成"}
-        if let task=store.transcript?.task,task.state != "完成",task.state != "已取消" {return task.failedIDs.isEmpty ? "继续翻译…" : "重试并继续…"}
-        return count==0 ? "生成此服务译文…" : "翻译中文…"
+    @LPState private var showingDetails=false
+    private var total:Int {store.transcript?.cues.count ?? 0}
+    private var count:Int {store.transcript?.translatedCount ?? 0}
+    private var record:TranslationTaskState? {store.transcript?.task}
+    private var running:Bool {
+        guard job.isRunning(store.current),let id=store.current,let task=job.states[id] else{return false}
+        return (task.variantID ?? task.config.providerID.rawValue)==store.transcript?.variantID
+    }
+    private var label:String {
+        if total==0 {return "添加字幕…"}
+        if let record,record.state != "完成",record.state != "已取消" {return record.failedIDs.isEmpty ? "继续翻译…" : "重试翻译…"}
+        return count==0 ? "生成译文…" : "继续翻译…"
+    }
+    private var details:String {
+        var values=["当前译文：\(count)/\(total)"]
+        if let record {values.append("本次任务：\(record.completed)/\(record.ids.count)")}
+        if job.lessonID==store.current {
+            if !job.status.isEmpty {values.append(job.status)}
+            if !job.eta.isEmpty {values.append(job.eta)}
+            if !job.details.isEmpty {values.append(job.details)}
+        }
+        return values.joined(separator:"\n")
     }
     var body:some View {
-        VStack(alignment:.leading,spacing:6) {
-            HStack {
-                if job.isRunning(store.current) {
-                    Button(job.pauseRequested ? "正在收尾…" : "暂停") {job.pause()}.disabled(job.pauseRequested)
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button(label) {if total==0 {store.replaceSubtitle()}else{confirming=true}}.disabled(!job.acceptsQueuedWork || (total>0 && count==total) || store.transcript?.variantID=="legacy")
-                }
-                Spacer();Text("中文 \(count)/\(total)").font(.caption).monospacedDigit()
+        Group {
+            if running || total==0 || (count<total && store.transcript?.variantID != "legacy") {
+                HStack(spacing:10) {
+                    if running {
+                        Text(job.pauseRequested ? "翻译收尾中" : "翻译中").font(.caption).foregroundStyle(.secondary)
+                        ProgressView(value:Double(record?.completed ?? count),total:Double(max(1,record?.ids.count ?? total)))
+                        Button("暂停") {job.pause()}.disabled(job.pauseRequested)
+                    } else {
+                        Button(label) {if total==0 {store.replaceSubtitle()}else{confirming=true}}.disabled(!job.acceptsQueuedWork)
+                        Spacer(minLength:0)
+                    }
+                    if running || record != nil {Button("详情") {showingDetails=true}.font(.caption)}
+                }.buttonStyle(.borderless).padding(.vertical,4)
             }
-            if job.lessonID==store.current && job.states[store.current ?? UUID()]?.variantID==store.transcript?.variantID {
-                if !job.status.isEmpty {Text(job.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)}
-                if !job.eta.isEmpty {Text(job.eta).font(.caption).foregroundStyle(.secondary)}
-                if !job.details.isEmpty {DisclosureGroup("技术详情"){Text(job.details).font(.caption).textSelection(.enabled)}}
-            }
-        }.buttonStyle(.borderless).padding(.vertical,6)
+        }
         .sheet(isPresented:$confirming) {if let id=store.current {TranslationConfirmation(store:store,job:job,lessonID:id,query:query)}}
+        .popover(isPresented:$showingDetails) {ScrollView {Text(details).font(.caption).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding(14)}.frame(width:320,height:180)}
     }
 }

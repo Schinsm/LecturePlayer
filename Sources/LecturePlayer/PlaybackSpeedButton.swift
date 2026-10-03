@@ -70,29 +70,66 @@ final class SpeedOptionsView: NSView {
     var selected = 1
     var choose: ((Int) -> Void)?
     var dismiss: (() -> Void)?
-    private var buttons: [NSButton] = []
+    private var buttons: [SpeedOptionRow] = []
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     func build() {
-        frame = NSRect(x: 0, y: 0, width: 116, height: 7 * 30 + 16)
+        buttons.forEach { $0.removeFromSuperview() }; buttons=[]
+        frame = NSRect(x: 0, y: 0, width: 126, height: 7 * 26 + 12)
         for (index, rate) in SpeedAnchorButton.rates.enumerated() {
-            let button = NSButton(title: "\(rate.formatted())×", target: self, action: #selector(pick(_:)))
-            button.setButtonType(.radio); button.isBordered = false; button.tag = index
-            button.state = index == selected ? .on : .off
-            button.frame = NSRect(x: 12, y: 8 + index * 30, width: 92, height: 28)
+            let button = SpeedOptionRow(title: "\(rate.formatted())×", target: self, action: #selector(pick(_:)))
+            button.isBordered = false; button.tag = index; button.current = index == selected
+            button.frame = NSRect(x: 6, y: 6 + index * 26, width: 114, height: 26)
             button.setAccessibilityLabel("\(rate.formatted())倍速")
+            button.setAccessibilityValue(button.current ? "当前" : "")
+            button.hover = { [weak self] in self?.highlight(index) }
             addSubview(button); buttons.append(button)
         }
+    }
+    private func highlight(_ index: Int) {
+        selected=index
+        for button in buttons { button.emphasized=button.tag == index }
     }
     @objc private func pick(_ sender: NSButton) { choose?(sender.tag) }
     override func keyDown(with event: NSEvent) {
         switch event.keyCode {
-        case 126: selected = max(0, selected - 1)
-        case 125: selected = min(SpeedAnchorButton.rates.count - 1, selected + 1)
-        case 36, 49: choose?(selected); return
-        case 53: dismiss?(); return
-        default: super.keyDown(with: event); return
+        case 126: highlight(max(0, selected - 1))
+        case 125: highlight(min(SpeedAnchorButton.rates.count - 1, selected + 1))
+        case 36, 49: choose?(selected)
+        case 53: dismiss?()
+        default: super.keyDown(with: event)
         }
-        for (index, button) in buttons.enumerated() { button.state = index == selected ? .on : .off }
+    }
+}
+
+/// Menu rows keep the current-rate check separate from keyboard/hover selection.
+private final class SpeedOptionRow: NSButton {
+    var current=false
+    var emphasized=false { didSet { needsDisplay=true } }
+    var hover:(()->Void)?
+    private var tracking:NSTrackingArea?
+    override var acceptsFirstResponder:Bool {false}
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking {removeTrackingArea(tracking)}
+        let area=NSTrackingArea(rect:bounds,options:[.mouseEnteredAndExited,.activeInKeyWindow,.inVisibleRect],owner:self)
+        tracking=area;addTrackingArea(area)
+    }
+    override func mouseEntered(with event:NSEvent) {hover?()}
+    override func mouseExited(with event:NSEvent) {emphasized=false}
+    override func draw(_ dirtyRect:NSRect) {
+        if emphasized || isHighlighted {
+            NSColor.selectedContentBackgroundColor.withAlphaComponent(NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast ? 0.3 : 0.14).setFill()
+            NSBezierPath(roundedRect:bounds,xRadius:5,yRadius:5).fill()
+        }
+        let color=NSColor.labelColor
+        if current {
+            color.setStroke()
+            let mark=NSBezierPath();mark.lineWidth=1.6;mark.lineCapStyle = .round;mark.lineJoinStyle = .round
+            mark.move(to:NSPoint(x:8,y:bounds.midY));mark.line(to:NSPoint(x:11,y:bounds.midY-3));mark.line(to:NSPoint(x:17,y:bounds.midY+4));mark.stroke()
+        }
+        let text=title as NSString, font=NSFont.systemFont(ofSize:13)
+        let size=text.size(withAttributes:[.font:font])
+        text.draw(at:NSPoint(x:28,y:(bounds.height-size.height)/2),withAttributes:[.font:font,.foregroundColor:color])
     }
 }

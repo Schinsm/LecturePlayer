@@ -19,7 +19,7 @@ struct PlayerPage: View {
             }
         }.background(PlayerKeys(action: playbackKey)).id(store.current)
     }
-    private func playbackKey(_ code:UInt16,_ modifiers:NSEvent.ModifierFlags)->Bool {
+    func playbackKey(_ code:UInt16,_ modifiers:NSEvent.ModifierFlags)->Bool {
         guard let command=shortcuts.resolve(code,modifiers) else{return false}
         if command == .search,let id=store.current {
             readerVisible = true
@@ -27,7 +27,7 @@ struct PlayerPage: View {
             store.readerPresentation.session(id).searchRequest += 1
             return true
         }
-        guard store.playback.ready else{return false}
+        guard store.playback.ready else{return true}
         guard let action=shortcuts.transport(command,position:store.playback.position,cues:store.transcript?.cues ?? [],mapper:store.lecture?.state.timingMapper ?? SubtitleTimingMapper()) else{return true}
         switch action {case .toggle:store.playback.toggle();case .seek(let seconds):store.playback.seek(seconds)}
         return true
@@ -77,6 +77,10 @@ struct VideoPane: View {
     @LPState private var resumed = false
     var body: some View {
         VStack(spacing: 10) {
+            HStack {
+                Spacer()
+                LayoutMenu(store:store,playback:playback)
+            }.frame(height: 22).buttonStyle(.borderless)
             DualVideoView(store: store, playback: playback)
                 .background(VideoEdgeAnchor())
                 .overlay(alignment: .bottom) { VideoCaptionOverlay(store: store, playback: playback, presentation:store.captions) }
@@ -137,7 +141,6 @@ struct VideoPane: View {
                     Slider(value: Binding(get: { playback.volume }, set: { playback.setVolume($0) }), in: 0...1)
                         .frame(width: 120).accessibilityLabel("音量")
                 }
-                LayoutMenu(store:store,playback:playback)
                 StudyFullscreenButton()
         }.fixedSize(horizontal: true, vertical: false)
     }
@@ -178,15 +181,17 @@ struct ReaderPane: View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("译文来源", selection: Binding(get:{store.transcript?.variantID ?? "openAI"},set:{store.selectTranslation($0)})) {
                 ForEach(TranslationService.allCases,id: \.rawValue) { service in
-                    Text("\(service.title) · \(store.transcript?.variants?[service.rawValue]?.translations.count ?? 0)/\(cues.count)").tag(service.rawValue)
+                    Text(service.title).tag(service.rawValue)
                 }
-                if let history=store.transcript?.variants?["legacy"], !history.translations.isEmpty {Text("历史译文 · \(history.translations.count)/\(cues.count)").tag("legacy")}
+                if let history=store.transcript?.variants?["legacy"], !history.translations.isEmpty {Text("历史译文").tag("legacy")}
             }.controlSize(.small).accessibilityLabel("译文来源")
             TranslationControls(store: store, job: store.translation, query: reader.query)
             HStack {
-                TextField("搜索中英文", text: Binding(get: { reader.query }, set: { reader.search($0); updateSearch() }))
+                TextField("搜索", text: Binding(get: { reader.query }, set: { reader.search($0); updateSearch() }))
                     .focused($searchFocused).textFieldStyle(.roundedBorder)
-                Text("\(matches.count)").font(.caption)
+                if !reader.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(matches.isEmpty ? "无结果" : "\(matches.count)").font(.caption).foregroundStyle(.secondary)
+                }
                 Menu {
                     Toggle("按句显示", isOn: Binding(get: {store.lecture?.readingGrouped ?? true}, set: {v in if let id = store.current {store.updateLecture(id) {$0.readingGrouped = v}}}))
                     Toggle("隐藏自动说话人编号", isOn: $hideSpeakers)
@@ -197,7 +202,10 @@ struct ReaderPane: View {
                     if let id = store.current { store.updateLecture(id) { $0.state.mode = mode } }
                 })) { ForEach(["双语", "英文", "中文"], id: \.self) { Text($0) } }.labelsHidden()
                 Spacer()
-                Button(reader.following ? "跟随播放" : "回到当前播放") { reader.resume(); updateSearch(); scrollRequest += 1 }
+                Button("跟随") { reader.resume(); updateSearch(); scrollRequest += 1 }
+                    .opacity(reader.following ? 0 : 1)
+                    .disabled(reader.following).accessibilityHidden(reader.following)
+                    .help("回到当前播放位置")
             }
             Button(mapper.label, systemImage: "clock.arrow.2.circlepath") { syncOpen.toggle() }
                 .accessibilityLabel("字幕同步：" + mapper.label)
@@ -279,11 +287,11 @@ struct ReaderPane: View {
         updateActive(playback.position); if visible,reader.following {scrollRequest += 1}
     }
     private func rebuild() {
-        guard let data=store.preparedReading else { index=ReadingIndex(); timeline=TranscriptTimeline([]); updateSearch(); return }
+        guard let data=store.preparedReading else { index=ReadingIndex(); timeline=TranscriptTimeline([]); activeIDs=[]; anchorID=nil; updateSearch(); return }
         index=data.index(grouped:store.lecture?.readingGrouped ?? true); timeline=data.timeline; updateActive(playback.position); updateSearch()
     }
     private func updateActive(_ position: Double) {
-        let next = timeline.active(at: position, mapper: mapper)
+        let next = timeline.readingFocus(at: position, mapper: mapper)
         if next != activeIDs { activeIDs = next }
         let anchor = next.first ?? timeline.anchor(at: position, mapper: mapper)
         if anchor != anchorID { anchorID = anchor }
