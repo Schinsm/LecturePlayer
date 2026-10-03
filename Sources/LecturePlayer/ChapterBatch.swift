@@ -49,7 +49,7 @@ struct ChapterBatchConfirmation: View {
     var body:some View {
         VStack(alignment:.leading,spacing:16) {
             Text("生成总结与章节").font(.title2)
-            Text("按以下顺序逐堂处理。播放不受影响；失败或暂停后停止后续请求。")
+            Text("按确认顺序调度，全局最多两个请求。播放不受影响；失败或暂停后停止后续请求。")
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment:.leading,spacing:18) {
@@ -61,7 +61,7 @@ struct ChapterBatchConfirmation: View {
             }
             Text("本次处理 \(rows.compactMap(\.entry).count) 堂。费用是估算，已发送的请求仍可能计费；不自动重试。").font(.caption)
             if !error.isEmpty {Text(error).foregroundStyle(.red)}
-            if translation.busy {Text("等待当前翻译、总结或连接测试收尾后即可开始。").font(.caption)}
+            if !translation.acceptsQueuedWork {Text("等待当前翻译、总结或连接测试收尾后即可开始。").font(.caption)}
             if !keyAvailability.configured(.openAI) {Text("请先在设置中保存 OpenAI Key。").font(.caption)}
             HStack {
                 Button("取消") {dismiss()}.keyboardShortcut(.cancelAction)
@@ -69,7 +69,7 @@ struct ChapterBatchConfirmation: View {
                 Button("确认并依次生成") {
                     do {try processing.launch(rows.compactMap(\.entry),store:store);dismiss()} catch {self.error=error.localizedDescription}
                 }.buttonStyle(.borderedProminent)
-                    .disabled(rows.compactMap(\.entry).isEmpty || translation.busy || !keyAvailability.configured(.openAI))
+                    .disabled(rows.compactMap(\.entry).isEmpty || !translation.acceptsQueuedWork || !keyAvailability.configured(.openAI))
             }
         }.padding(24).frame(width:600,height:520)
             .task {do {rows=try ChapterBatchPlanner.rows(ids:ids,store:store,config:AnalysisPreferences.load())} catch {self.error=error.localizedDescription}}

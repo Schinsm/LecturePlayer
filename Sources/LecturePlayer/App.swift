@@ -9,7 +9,7 @@ typealias LPState<Value> = SwiftUI.State<Value>
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store = AppStore()
     var body: some Scene {
-        Window("Lecture Player", id: "main") { RootView(store: store).onAppear{delegate.beforeTerminate={store.captions.flush();store.readerPresentation.flush();store.playback.persist();try store.repository?.commits.flush()}}.frame(minWidth: 900, minHeight: 560).background(WindowPersistence()).onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.captions.flush(); store.playback.persist(); store.flushMetadata(); store.analysis.cancel();store.translation.cancel();store.processing.worker?.cancel() }.onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in store.captions.flush(); store.playback.persist(); store.flushMetadata() } }.defaultSize(width:1200,height:780)
+        Window("Lecture Player", id: "main") { RootView(store: store).onAppear{delegate.drainBeforeTerminate={await store.drainGeneration()};delegate.beforeTerminate={store.captions.flush();store.readerPresentation.flush();store.playback.persist();try store.repository?.commits.flush()}}.frame(minWidth: 900, minHeight: 560).background(WindowPersistence()).onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.captions.flush(); store.playback.persist(); store.flushMetadata(); store.analysis.cancel();store.translation.cancel();store.processing.worker?.cancel() }.onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in store.captions.flush(); store.playback.persist(); store.flushMetadata() } }.defaultSize(width:1200,height:780)
         Settings { PreferencesView(store:store) }
         .commands { CommandGroup(after:.newItem) {Button("在 Finder 打开当前目录"){store.openSelectedDirectory()}.disabled(store.library.directoryRoot==nil)} }
     }
@@ -70,7 +70,8 @@ struct LibraryPage: View {
                     }
                     Spacer()
                 }.buttonStyle(.borderless)
-                TransferStatus(transfer: store.transfer)
+                if importing {Text(store.importStatus).font(.caption).foregroundStyle(.secondary)}
+            TransferStatus(transfer: store.transfer)
                 if items.isEmpty && candidates.isEmpty {
                     VStack(spacing:12) {
                         ContentUnavailableView(store.library.directoryRoot == nil ? "选择课程总目录" : search.isEmpty ? "此目录暂无课件" : "没有匹配的课件",systemImage:search.isEmpty ? "folder" : "magnifyingglass",description:Text(store.library.directoryRoot == nil ? "在设置的资料库页面选择视频与字幕总目录。" : search.isEmpty ? "将视频与英文字幕放入此文件夹，确认导入后开始学习。" : "换一个关键词试试。"))
@@ -255,7 +256,6 @@ struct ImportView: View {
         let confirmedAnalysis=autoAnalyze && !store.translation.busy ? analysisPreviews : []
         Task { @MainActor in
             defer{importing=false}
-            var completed:[ImportProcessingEntry]=[]
             do {
                 for row in rows {
                     if let id=row.existingID,let sourceID=row.relinkSourceID {try await store.relinkMedia(id,sourceID:sourceID,url:row.video)}
@@ -266,13 +266,12 @@ struct ImportView: View {
                         let analysis=confirmedAnalysis.first(where:{$0.rowID==row.id})
                         if preview != nil || analysis != nil {
                             let task=preview.map {TranslationTaskState(transcript:$0.transcript,ids:$0.transcript.cues.map(\.id),config:$0.config)}
-                            completed.append(ImportProcessingEntry(id:id,translation:task,analysis:analysis?.task))
+                            try store.processing.launch([ImportProcessingEntry(id:id,translation:task,analysis:analysis?.task)],store:store,deferIfPaused:true)
                         }
                     }
                     rows.removeAll{$0.id==row.id}
                 }
             }catch{message=error is CancellationError ? "已取消；仅成功导入的课件进入队列。" : error.localizedDescription}
-            if !completed.isEmpty {do{try store.processing.launch(completed,store:store)}catch{message=error.localizedDescription}}
             store.refreshDirectory();if rows.isEmpty && message.isEmpty {dismiss()}
         }
     }
@@ -366,11 +365,11 @@ struct TranslationControls:View {
     var body:some View {
         VStack(alignment:.leading,spacing:6) {
             HStack {
-                if job.running && job.lessonID==store.current {
+                if job.isRunning(store.current) {
                     Button(job.pauseRequested ? "正在收尾…" : "暂停") {job.pause()}.disabled(job.pauseRequested)
                     ProgressView().controlSize(.small)
                 } else {
-                    Button(label) {if total==0 {store.replaceSubtitle()}else{confirming=true}}.disabled(job.busy || (total>0 && count==total) || store.transcript?.variantID=="legacy")
+                    Button(label) {if total==0 {store.replaceSubtitle()}else{confirming=true}}.disabled(!job.acceptsQueuedWork || (total>0 && count==total) || store.transcript?.variantID=="legacy")
                 }
                 Spacer();Text("中文 \(count)/\(total)").font(.caption).monospacedDigit()
             }

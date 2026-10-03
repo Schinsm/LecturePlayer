@@ -33,7 +33,7 @@ struct AnalysisPanel: View {
     private var stale: Bool { record.map { $0.sourceVersion != version } ?? false }
     private var source: Transcript? { stale ? historicalSource : store.transcript }
     private var mapper: SubtitleTimingMapper { lesson?.state.timingMapper ?? SubtitleTimingMapper() }
-    private var thisRunning: Bool { job.runningLessonID == lesson?.id }
+    private var thisRunning: Bool { job.isRunning(lesson?.id) }
     private var unavailable: Bool { version.isEmpty || store.transcript?.cues.isEmpty != false }
     private var buttonTitle: String {
         if thisRunning { return job.pauseRequested ? "正在收尾…" : "暂停" }
@@ -42,12 +42,11 @@ struct AnalysisPanel: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("课程章节").font(.headline)
-                Button("定位当前"){locateRequest += 1}.disabled(currentChapterID==nil || stale).help("展开并定位当前章节，不改变播放位置")
-                Spacer()
-                Button(buttonTitle) { if thisRunning { job.pause() } else { confirming = true } }
-                    .disabled(unavailable || (thisRunning ? job.pauseRequested : translation.busy))
+            TextField("搜索主题、知识点或英文术语", text: $session.chapterQuery)
+                .textFieldStyle(.roundedBorder).accessibilityLabel("搜索课程章节")
+            ViewThatFits(in:.horizontal) {
+                chapterToolbar(expandedControls:true)
+                chapterToolbar(expandedControls:false)
             }
             if let id = lesson?.id, let error = job.loadErrors[id] {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -58,7 +57,7 @@ struct AnalysisPanel: View {
                 Button("添加英文字幕…") { store.replaceSubtitle() }
             } else {
                 if thisRunning {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(job.status).font(.caption) }
+                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(job.status(for:lesson?.id)).font(.caption) }
                 } else if let pending {
                     Text(pending.pendingChunks.isEmpty ? "分块分析已保存，最后整理未完成。继续时只处理整理步骤。" : "已保存 \(pending.completedChunks.count)/\(pending.plan.chunks.count) 组分析 · 等待确认继续").font(.caption).foregroundStyle(.secondary)
                     if let message = pending.message, !message.isEmpty {
@@ -95,9 +94,7 @@ struct AnalysisPanel: View {
                                 }.padding(.top, 10)
                             }.font(.body)
                             Divider()
-                            TextField("搜索主题、知识点或英文术语", text: $session.chapterQuery).textFieldStyle(.roundedBorder)
-                            if let topics = document.topics {
-                                HStack {Button("展开全部") {expandedTopics=Set(topics.map(\.id))}; Button("收起全部") {expandedTopics=[]}}.buttonStyle(.borderless)
+                            if document.topics != nil {
                                 ForEach(filteredTopics) { topic in topicRow(topic) }
                             } else {
                                 Text("旧版目录；生成细化目录后可定位到知识点。").font(.caption).foregroundStyle(.secondary)
@@ -142,6 +139,28 @@ struct AnalysisPanel: View {
             if let id = lesson?.id { AnalysisConfirmation(store: store, job: job, translation: translation, lessonID: id) }
         }
     }
+    private func chapterToolbar(expandedControls:Bool) -> some View {
+        HStack(spacing:8) {
+            Text("课程章节").font(.headline).fixedSize()
+            Button("定位当前"){locateRequest += 1}
+                .disabled(currentChapterID==nil || stale).help("清除搜索并定位当前知识点，保留播放状态")
+            Spacer(minLength:0)
+            if expandedControls,record?.completed?.topics != nil {
+                Button("展开全部"){expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
+                Button("收起全部"){expandedTopics=[]}
+            }
+            Menu {
+                if !expandedControls,record?.completed?.topics != nil {
+                    Button("展开全部"){expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
+                    Button("收起全部"){expandedTopics=[]}
+                    Divider()
+                }
+                Button(buttonTitle) {if thisRunning {job.pause()} else {confirming=true}}
+                    .disabled(unavailable || (thisRunning ? job.pauseRequested : !translation.acceptsQueuedWork))
+            } label: {Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize()
+                .help("章节操作").accessibilityLabel("章节操作")
+        }.controlSize(.small)
+    }
     private func chapterMatches(_ chapter: AnalysisChapter) -> Bool {
         chapterQuery.isEmpty || ([chapter.title] + chapter.points).joined(separator:" ").localizedCaseInsensitiveContains(chapterQuery)
     }
@@ -161,7 +180,7 @@ struct AnalysisPanel: View {
                 }.buttonStyle(.plain).accessibilityLabel("展开或收起" + topic.title)
                 Button {if let first=topic.subtopics.first {seek(first)}} label: {
                     VStack(alignment:.leading,spacing:5) {
-                        HStack {Text(topic.title).font(.headline);if currentTopicID==topic.id {ChapterPlaybackBadge(playback:playback)}}
+                        HStack {Text(topic.title).font(.headline);if currentTopicID==topic.id && !expandedTopics.contains(topic.id) && chapterQuery.isEmpty {ChapterPlaybackBadge(playback:playback)}}
                         if let first=topic.subtopics.first,let last=topic.subtopics.last {Text(topicRange(first,last)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)}
                         Text(topic.overview).font(.callout).foregroundStyle(.secondary)
                     }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
@@ -173,8 +192,7 @@ struct AnalysisPanel: View {
                 }
             }
         }.padding(8)
-            .background(currentTopicID==topic.id ? Color.accentColor.opacity(0.09):Color.clear,in:RoundedRectangle(cornerRadius:10))
-            .overlay(alignment:.leading) {if currentTopicID==topic.id {RoundedRectangle(cornerRadius:2).fill(Color.accentColor).frame(width:3).padding(.vertical,8)}}
+
             .id("topic:"+topic.id)
             .accessibilityValue(currentTopicID==topic.id ? "当前主题":"")
     }
@@ -186,17 +204,19 @@ struct AnalysisPanel: View {
         VStack(alignment: .leading, spacing: 7) {
             Button { seek(chapter) } label: {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(rangeLabel(chapter)).font(.caption.monospacedDigit()).foregroundStyle(.blue)
+                    Text(rangeLabel(chapter)).font(.caption.monospacedDigit()).foregroundStyle(isCurrent(chapter) ? Color.accentColor : Color.secondary)
                     HStack {Text(chapter.title).font(.headline);if isCurrent(chapter) {ChapterPlaybackBadge(playback:playback)}}
                     ForEach(Array(chapter.points.enumerated()), id: \.offset) { _, point in
                         Text("• " + point).font(.callout).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(stale)
+            if !chapterQuery.isEmpty {Label("搜索匹配",systemImage:"magnifyingglass").font(.caption2).foregroundStyle(.secondary)}
             Button("查看对应原文") { onViewSource(chapter.startCueID) }
                 .buttonStyle(.borderless).font(.caption).disabled(stale)
         }.padding(12)
-            .background(isCurrent(chapter) ? Color.accentColor.opacity(0.13) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            .background(isCurrent(chapter) ? Color.primary.opacity(0.055) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment:.leading) {if isCurrent(chapter) {RoundedRectangle(cornerRadius:2).fill(Color.accentColor).frame(width:3).padding(.vertical,8)}}
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(rangeLabel(chapter))，\(chapter.title)")
             .accessibilityValue(isCurrent(chapter) ? "当前知识点":"")
@@ -260,7 +280,7 @@ struct AnalysisConfirmation: View {
         return value.forStage("analysis")
     }
     private var lesson: Lecture? { store.library.lectures.first { $0.id == lessonID } }
-    private var busy: Bool { translation.busy }
+    private var busy: Bool { !translation.acceptsQueuedWork }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(resuming ? "继续生成总结与章节" : hadCompleted ? "重新生成总结与章节" : "生成总结与章节").font(.title2.bold())
@@ -332,8 +352,9 @@ struct AnalysisConfirmation: View {
         do {
             if !resuming { request.config = config }
             else if compactContinuation { request = try request.compactContinuation() }
-            let provider = OpenAIAnalysisProvider(key: try Keychain.read(.openAI))
-            try job.launch(store: store, lessonID: lessonID, proposed: request, provider: provider)
+            var entry=ImportProcessingEntry(id:lessonID,translation:nil,analysis:request)
+            entry.purpose="chapters";entry.regenerateAnalysis=hadCompleted && !resuming;entry.analysisReconfirmed=compactContinuation && resuming
+            try store.processing.launch([entry],store:store)
             if !resuming { AnalysisPreferences.save(request.config) }
             dismiss()
         } catch { message = error.localizedDescription }

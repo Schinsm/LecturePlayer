@@ -45,9 +45,14 @@ struct Keychain {
     @Published var lessonID:UUID?
     @Published var pauseRequested=false
     @Published var eta:String=""
-    let writer=TranslationWriter()
+    var writer=TranslationWriter()
+    var scheduler:RequestScheduler?
+    var onState:((UUID,TranslationTaskState)->Void)?
+    @Published var coordinatedLessons:Set<UUID>=[]
+    func isRunning(_ id:UUID?) -> Bool {id != nil && ((running && lessonID==id) || coordinatedLessons.contains(id!))}
+    var acceptsQueuedWork:Bool {!testing && (!busy || coordinating)}
     let requestGate=TranslationRequestGate()
-    func pause(){onPause?();requestGate.setPaused(true);pauseRequested=true;status="正在收尾：已发送的请求完成后保存，不再发送新请求。"}
+    func pause(){onPause?();if let scheduler {Task {await scheduler.pause()}};requestGate.setPaused(true);pauseRequested=true;status="正在收尾：已发送的请求完成后保存，不再发送新请求。"}
     var localEngine:AnyObject? = {if #available(macOS 15.0,*) {return AppleTranslationEngine()};return nil}()
     func provider(_ config:TranslationConfig) throws -> any TranslationProvider {
         if config.providerID == .apple {if #available(macOS 15.0,*),let engine=localEngine as? AppleTranslationEngine {return engine};throw Failure("Apple 本机翻译需要 macOS 15 或更新版本")}
@@ -63,14 +68,14 @@ struct Keychain {
         for lesson in store.library.lectures {
             if let source=try? store.repository?.read(lesson), var record = source.variants?.values.compactMap(\.task).sorted(by: { ($0.state != "完成" && $0.state != "已取消" ? 0 : 1) < ($1.state != "完成" && $1.state != "已取消" ? 0 : 1) }).first {
                 if record.state != "完成" && record.state != "已取消" { record.state="待恢复" }
-                states[lesson.id]=record
+                states[lesson.id]=record;onState?(lesson.id,record)
             }
         }
     }
     func saveTask(_ record:TranslationTaskState,lesson:Lecture,store:AppStore) throws {
         TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}
         guard var t=try store.repository?.read(lesson,variantID:record.variantID ?? record.config.providerID.rawValue),t.version == record.version else { throw Failure("字幕版本已改变，需要重新确认") }
-        t.task=record;try store.repository?.write(t,for:lesson.id);store.displayTranscript(t,for:lesson.id);states[lesson.id]=record
+        t.task=record;try store.repository?.write(t,for:lesson.id);store.displayTranscript(t,for:lesson.id);states[lesson.id]=record;onState?(lesson.id,record)
     }
     func start(store:AppStore,ids:Set<String>?,retry:Bool=false,wholeLecture:Bool=false,lectureID:UUID?=nil,precise:Bool=false) {
         guard !busy,let lecture=store.library.lectures.first(where:{$0.id == (lectureID ?? store.current)}) else{return}
@@ -102,10 +107,22 @@ struct Keychain {
         } catch {store.error=error.localizedDescription}
     }
     func launch(store:AppStore,ids:[UUID],provider:any TranslationProvider,coordinated:Bool=false) {
+        if !coordinated,store.processing.running {
+            do {
+                let entries=try ids.map {id -> ImportProcessingEntry in
+                    guard let lesson=store.library.lectures.first(where:{$0.id==id}),let task=try store.repository?.read(lesson,variantID:states[id]?.variantID)?.task else {throw Failure("翻译任务不可用")}
+                    return ImportProcessingEntry(id:id,translation:task,analysis:nil)
+                }
+                try store.processing.launch(entries,store:store)
+            } catch {store.error=error.localizedDescription}
+            return
+        }
         guard !testing,(!analyzing && !coordinating) || coordinated else{return}
         if running {authorized += ids.filter{!authorized.contains($0) && lessonID != $0};return};running=true;pauseRequested=false;requestGate.setPaused(false);eta=""
+        scheduler=store.requests
         task=Task { [weak self,weak store] in
             guard let self,let store else{return};defer{self.running=false;self.task=nil}
+            if !coordinated {await store.requests.resume()}
             await self.executeQueue(store:store,ids:ids,provider:provider)
         }
     }
@@ -136,7 +153,7 @@ struct Keychain {
         let started=Date()
         guard let file=try? store.repository?.transcriptURL(lecture.id,lecture.transcriptVersion ?? ""),var latestTranscript=try? await writer.read(file) else {status="无法读取字幕，未发送请求";return}
         latestTranscript=latestTranscript.viewing(config.providerID.rawValue)
-        struct Completed:Sendable {var batch:TranslationBatch;var result:TranslationResult;var seconds:Double;var id:UUID;var sent=true}
+        struct Completed:Sendable {var batch:TranslationBatch;var result:TranslationResult;var seconds:Double;var id:UUID;var sent=true;var lease:RequestScheduler.Lease?=nil}
         await withTaskGroup(of:Completed.self) { group in
             @MainActor func dispatch() -> Bool {
                 guard !pauseRequested,!stopped,!Task.isCancelled else{return false}
@@ -148,30 +165,38 @@ struct Keychain {
                     if batch.targets.isEmpty {continue}
                     let planned=batch
                     group.addTask {
-                        let id=UUID(),start=Date();let result:TranslationResult
-                        do {result=try await provider.translate(planned,config:config)}
-                        catch is TranslationNotSent {return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
+                        let id=UUID();let lease:RequestScheduler.Lease
+                        do {lease=try await store.requests.acquire(lesson:lecture.id,serial:config.providerID == .openAI ? nil : config.providerID.rawValue)}
+                        catch {return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
+                        let valid=await MainActor.run { !self.pauseRequested && store.library.lectures.first(where:{$0.id==lecture.id})?.transcriptVersion==planned.sourceVersion }
+                        guard valid,!Task.isCancelled else {await store.requests.pause();await store.requests.release(lease);return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
+                        let start=Date();let result:TranslationResult
+                        do {try Task.checkCancellation();result=try await provider.translate(planned,config:config)}
+                        catch is TranslationNotSent {await store.requests.release(lease);return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
                         catch {result=(error as? APIError)?.result ?? TranslationResult(items:[],problem:error is CancellationError || (error as? URLError)?.code == .cancelled ? "请求已取消；用量未知，可能已计费" : "网络或服务请求失败；未自动重发，用量可能已计费")}
-                        return Completed(batch:planned,result:result,seconds:Date().timeIntervalSince(start),id:id)
+                        return Completed(batch:planned,result:result,seconds:Date().timeIntervalSince(start),id:id,lease:lease)
                     }
                     return true
                 }
                 return false
             }
-            for _ in 0..<(coordinating ? 1 : config.parallelism) {_ = dispatch()}
+            for _ in 0..<config.parallelism {_ = dispatch()}
             while let done=await group.next() {
                 if !done.sent {stopped=true;continue}
                 do {
-                    let saved=try await commit(done.result,batch:done.batch,config:config,lecture:lecture,store:store,seconds:done.seconds,attemptID:done.id)
+                    let saved=try await commit(done.result,batch:done.batch,config:config,lecture:lecture,store:store,seconds:done.seconds,attemptID:done.id,deferFiles:true,queueSeconds:done.lease?.queueSeconds)
                     latestTranscript=saved.transcript
                     completedRequests += 1
                     if !saved.complete {onPause?();stopped=true;requestGate.setPaused(true);details=(done.result.problem ?? saved.transcript.attempts?.last?.outcome ?? "尚未完成")+"\n请求："+(done.result.requestID ?? "未记录");status="已保存 \(saved.saved) 条，本组还有 \(done.batch.targets.count-saved.saved) 条尚未完成。此前译文已保留。"}
                     else if !stopped && !pauseRequested {status="本课已译 \(saved.transcript.translatedCount)/\(saved.transcript.cues.count)"}
                     if completedRequests>=3 && !stopped && !pauseRequested {eta="预计还需约 \(max(1,Int(Date().timeIntervalSince(started)/Double(completedRequests)*Double(batches.count-completedRequests)/60))) 分钟"}
                 } catch {onPause?();stopped=true;status="保存未完成："+error.localizedDescription}
+                if stopped || pauseRequested {await store.requests.pause()}
+                if let lease=done.lease {await store.requests.release(lease)}
                 if !stopped && !pauseRequested {_ = dispatch()}
             }
         }
+        await writer.flushFiles()
         eta=""
         if let source=try? store.repository?.read(lecture,variantID:config.providerID.rawValue),var record=source.task {
             record.completed=record.ids.filter{source.translations[$0] != nil}.count
@@ -180,12 +205,12 @@ struct Keychain {
             if !stopped || pauseRequested {status="本课已译 \(source.translatedCount)/\(source.cues.count)" + (record.state == "完成" ? " · 本次完成" : " · 已暂停，译文已保存") }
         }
     }
-    func commit(_ result:TranslationResult,batch:TranslationBatch,config:TranslationConfig,lecture:Lecture,store:AppStore,seconds:Double?=nil,attemptID:UUID=UUID()) async throws -> TranslationCommit {
+    func commit(_ result:TranslationResult,batch:TranslationBatch,config:TranslationConfig,lecture:Lecture,store:AppStore,seconds:Double?=nil,attemptID:UUID=UUID(),deferFiles:Bool=false,queueSeconds:Double?=nil) async throws -> TranslationCommit {
         guard let repo=store.repository else {throw Failure("资料库不可用")}
         let active=store.library.lectures.first{$0.id==lecture.id} ?? lecture
-        let saved=try await writer.commit(result:result,batch:batch,config:config,lesson:active,url:repo.transcriptURL(lecture.id,batch.sourceVersion),seconds:seconds,attemptID:attemptID,allowSave:active.transcriptVersion==batch.sourceVersion)
+        let saved=try await writer.commit(result:result,batch:batch,config:config,lesson:active,url:repo.transcriptURL(lecture.id,batch.sourceVersion),seconds:seconds,attemptID:attemptID,allowSave:active.transcriptVersion==batch.sourceVersion,deferFiles:deferFiles,queueSeconds:queueSeconds)
         usageRevision += 1
-        if let record=saved.transcript.task {states[lecture.id]=record}
+        if let record=saved.transcript.task {states[lecture.id]=record;onState?(lecture.id,record)}
         if store.current==lecture.id && active.transcriptVersion==saved.transcript.version {store.displayTranscript(saved.transcript,for:lecture.id)}
         if active.transcriptVersion==saved.transcript.version {store.updateLecture(lecture.id){if let files=saved.sidecars{$0.sidecars=files};$0.sidecarStatus=saved.fileStatus}}
         return saved

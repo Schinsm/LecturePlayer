@@ -3,23 +3,33 @@ import Core
 
 @MainActor final class MediaTransfer: ObservableObject {
     @Published var running = false; @Published var progress = 0.0; @Published var message = ""
-    var worker: Task<Void, Error>?
+    var worker: Task<[String], Error>?
     func cancel() { worker?.cancel() }
-    func copy(_ pairs: [(URL, URL)]) async throws {
+    @discardableResult func copy(_ pairs: [(URL, URL)]) async throws -> [String] {
         guard !running else { throw Failure("已有复制任务正在进行") }
         running = true; progress = 0; message = "复制并校验媒体…"
         defer { running = false; worker = nil }
         let reporter = self
         let job = Task.detached {
+            var hashes:[String]=[]
             for (index, pair) in pairs.enumerated() {
-                try MediaCopy.copy(from: pair.0, to: pair.1) { value in
-                    Task { @MainActor in reporter.progress = (Double(index) + value) / Double(pairs.count) }
+                let lease=try await MediaFingerprintCache.fileWorkers.acquire(lesson:UUID())
+                do {
+                    let hash=try MediaCopy.copy(from: pair.0, to: pair.1) { value in
+                        Task { @MainActor in reporter.progress = (Double(index) + value) / Double(pairs.count) }
+                    }
+                    hashes.append(hash)
+                    await MediaFingerprintCache.fileWorkers.release(lease)
+                } catch {
+                    await MediaFingerprintCache.fileWorkers.release(lease);throw error
                 }
             }
+            return hashes
         }
         worker = job
-        try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+        let hashes=try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         progress = 1; message = "校验完成"
+        return hashes
     }
 }
 extension AppStore {
@@ -42,6 +52,7 @@ extension AppStore {
         let scoped = (originalURLs + (row.subtitle.map { [$0] } ?? [])).filter { $0.startAccessingSecurityScopedResource() }
         defer { for url in scoped { url.stopAccessingSecurityScopedResource() } }
         guard Set(originalURLs).count == originalURLs.count else { throw Failure("两路视角不能使用同一文件") }
+        importStatus="检查文件 · "+row.title
         let initialStamps = try await verifyStable(originalURLs + (row.subtitle.map { [$0] } ?? []))
         var media: [MediaSource] = []
         for (i, url) in originalURLs.enumerated() {
@@ -51,9 +62,8 @@ extension AppStore {
             let credential = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
             media.append(MediaSource(role: i == 0 ? row.role : (row.role == .screen ? .camera : .screen), path: url.path, bookmark: credential, identity: identity))
         }
-        for i in media.indices {
-            let url = originalURLs[i]; media[i].contentHash = try await Task.detached { try DirectoryIndex.hash(url) }.value
-        }
+        importStatus="内容校验 · "+row.title
+        if !managed {for i in media.indices {media[i].contentHash = try await fingerprints.hash(originalURLs[i])}}
         var lesson = Lecture(title: row.title, courseID: courseID, folderID: selectedFolder, url: row.video, bookmark: nil, identity: media[0].identity)
         lesson.subtitlePath = row.subtitle?.path; lesson.week = row.week; lesson.sessionType = row.sessionType; lesson.topic = row.topic; lesson.customTitle = row.customTitle
         lesson.state.speed = UserDefaults.standard.double(forKey: "defaultSpeed") == 0 ? 1 : UserDefaults.standard.double(forKey: "defaultSpeed")
@@ -68,9 +78,11 @@ extension AppStore {
                     let target = directory.appendingPathComponent(media[i].id.uuidString).appendingPathComponent(media[i].originalFilename)
                     pairs.append((originalURLs[i], target)); media[i].path = target.path; media[i].managed = true
                 }
-                try await transfer.copy(pairs)
+                let hashes=try await transfer.copy(pairs)
+                for i in media.indices {media[i].contentHash=hashes[i]}
                 for i in media.indices { media[i].bookmark = try URL(fileURLWithPath: media[i].path).bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil) }
             }
+            importStatus="保存课件 · "+row.title
             try Task.checkCancellation(); try verifyUnchanged(initialStamps); lesson.mediaSources = media
             if let transcript { try repository.write(transcript, for: lesson.id); lesson.transcriptVersion = transcript.version }
             var next = library
@@ -78,6 +90,7 @@ extension AppStore {
             guard next.courses.contains(where: { $0.id == lesson.courseID }) else { throw Failure("请把视频放进总目录下的学科文件夹，再刷新导入") }
             guard !next.lectures.contains(where: { existing in existing.mediaSources.contains { source in media.contains { $0.identity == source.identity } } }) else { throw Failure("导入期间视频已关联，未重复创建课件") }
             next.lectures.append(lesson); try repository.save(next); library = next
+            importStatus="课件已可播放 · "+row.title
             return lesson.id
         } catch { if let createdDirectory { try? FileManager.default.removeItem(at: createdDirectory) }; throw error }
     }

@@ -139,6 +139,7 @@ public struct AnalysisAttempt: Codable, Equatable, Sendable, Identifiable {
     public var outcome: String
     public var message: String?
     public var requestID: String?
+    public var queueSeconds: Double?
     public var requestSeconds: Double?
     public var validationSeconds: Double?
     public var databaseSeconds: Double?

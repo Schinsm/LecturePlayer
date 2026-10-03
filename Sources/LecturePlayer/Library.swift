@@ -15,6 +15,7 @@ import UniformTypeIdentifiers
      @Published var transcript: Transcript?; @Published var current: UUID?; var selectedCourse:UUID? {get{navigation.course} set{navigation.course=newValue}}
     var selectedFolder:UUID? {get{navigation.folder} set{navigation.folder=newValue}}
      @Published var error: String?; @Published var fatal = false
+    @Published var importStatus=""
     @Published var scanning = false; @Published var directoryFiles: [URL] = []; @Published var pendingFiles: [URL] = [] {didSet{refreshDirectoryPresentation()}}; @Published var showingLocations = false
     @Published var scanSummary = "尚未扫描"
     @Published var scanIssues: [String] = []
@@ -24,12 +25,14 @@ import UniformTypeIdentifiers
     @Published var lastDirectoryAttempt: Date?
     var refreshTimer: Timer?
     var unlinkedCount: Int { library.lectures.filter { $0.directoryPath == nil && $0.archived != true }.count }
-    let scanner = DirectoryScanner(); let directoryWatch = DirectoryWatch()
+    var fingerprints=MediaFingerprintCache()
+    lazy var scanner = DirectoryScanner(cache:fingerprints); let directoryWatch = DirectoryWatch()
     var rescanRequested = false
     var scanTask: Task<Void, Never>?
     var rootGeneration = UUID()
     var watchesEnabled = true
     let captions = CaptionPresentation()
+    let requests=RequestScheduler()
     let processing = ImportProcessingCoordinator()
     let analysis = AnalysisJob(); let transfer = MediaTransfer(); let translation = TranslationJob(); let playback = Playback(); var repository: Repository?
     var lecture: Lecture? { library.lectures.first { $0.id == current } }
@@ -44,8 +47,9 @@ import UniformTypeIdentifiers
         do {
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
             watchesEnabled = explicitRoot == nil && Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDisableAutomaticMaintenance") as? Bool != true
+            fingerprints=MediaFingerprintCache(storage:root.appendingPathComponent("Cache/media-fingerprints.json"))
             repository = try Repository(root: root); library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
-            let upgradeSnapshot = root.appendingPathComponent("before-v085.json")
+            let upgradeSnapshot = root.appendingPathComponent("before-v086.json")
             if !library.lectures.isEmpty, !FileManager.default.fileExists(atPath: upgradeSnapshot.path) { try repository!.writeRecoverySnapshot(library, to: upgradeSnapshot) }
             if watchesEnabled {
                 refreshPolicy=RefreshPolicy(rawValue:UserDefaults.standard.string(forKey:"directoryRefreshPolicy") ?? "automatic") ?? .automatic
@@ -55,6 +59,11 @@ import UniformTypeIdentifiers
             readerPresentation.save = {[weak self] id,panel in self?.updateLecture(id,quiet:true){$0.studyPanel=panel}}
             captions.save = { [weak self] id,value in self?.updateLecture(id) {$0.videoCaptions=value} }
             translation.restore(self);processing.restore(self)
+            Task { [weak self] in await self?.translation.writer.observeFiles { [weak self] id,saved in
+                guard let self,let lesson=self.library.lectures.first(where:{$0.id==id}),lesson.transcriptVersion==saved.transcript.version else{return}
+                self.displayTranscript(saved.transcript,for:id)
+                self.updateLecture(id){if let files=saved.sidecars {$0.sidecars=files};$0.sidecarStatus=saved.fileStatus}
+            }}
             directoryWatch.changed = { [weak self] in guard let self,self.refreshPolicy == .automatic else { return };self.refreshDirectory() }
             configureRefreshSchedule()
             playback.save = { [weak self] id, seconds, duration in self?.updateLecture(id,quiet:true) { $0.state.record(seconds, ready: true); $0.duration = duration } }
@@ -63,6 +72,12 @@ import UniformTypeIdentifiers
         } catch { self.error = "资料库打开失败（未删除或重建）：\(error.localizedDescription)"; fatal = true }
     }
     deinit { refreshTimer?.invalidate() }
+    func drainGeneration() async {
+        if processing.running {processing.pause(self)} else {translation.pause();analysis.pause()}
+        await requests.pause()
+        await processing.worker?.value;await translation.task?.value;await analysis.worker?.value
+        await translation.writer.flushFiles()
+    }
     func perform(_ action: () throws -> Void) { do { try action() } catch { self.error = error.localizedDescription } }
     func persist() { guard !fatal else { return }; perform { try repository?.save(library) } }
     func flushMetadata() {readerPresentation.flush();perform {try repository?.commits.flush()}}

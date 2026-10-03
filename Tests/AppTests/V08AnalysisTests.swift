@@ -83,8 +83,8 @@ private actor AnalysisMock: AnalysisProvider {
         try await waitForFirst(mock); store.analysis.pause(); await store.analysis.worker?.value
         let repo = AnalysisRepository(root: store.repository!.root)
         let paused = try #require(try await repo.load(lessonID: lesson.id, sourceVersion: transcript.version))
-        #expect(paused.task?.completedChunks.count == 1 && paused.task?.status == .paused)
-        #expect(await mock.chunks.count == 1)
+        #expect(paused.task?.completedChunks.count == 2 && paused.task?.status == .paused)
+        #expect(await mock.chunks.count == 2)
         #expect(await mock.merges == 0)
         let reopened = AppStore(root: store.repository!.root), resume = AnalysisMock()
         await reopened.analysis.load(store: reopened, lessonID: lesson.id)
@@ -92,7 +92,7 @@ private actor AnalysisMock: AnalysisProvider {
         #expect(await resume.chunks.isEmpty)
         try reopened.analysis.launch(store: reopened, lessonID: lesson.id, proposed: try #require(paused.task), provider: resume)
         await reopened.analysis.worker?.value
-        #expect(await resume.chunks.count == frozen.plan.chunks.count - 1)
+        #expect(await resume.chunks.count == frozen.plan.chunks.count - 2)
         #expect(await !resume.chunks.contains(frozen.plan.chunks[0].id))
         #expect(try await repo.load(lessonID: lesson.id, sourceVersion: transcript.version)?.completed != nil)
     }
@@ -104,9 +104,9 @@ private actor AnalysisMock: AnalysisProvider {
         let saved = try #require(try await AnalysisRepository(root: store.repository!.root).load(lessonID: lesson.id, sourceVersion: transcript.version))
         #expect(saved.completed == nil && saved.task?.status == .failed)
         #expect(saved.task?.completedChunks.isEmpty == true)
-        #expect(saved.attempts.count == 1 && saved.attempts[0].usage.inputTokens == 100)
+        #expect(saved.attempts.count == 2 && saved.attempts[0].usage.inputTokens == 100)
         #expect(saved.attempts[0].outcome == "failed")
-        #expect(await mock.chunks.count == 1)
+        #expect(await mock.chunks.count == 2)
         #expect(await mock.merges == 0)
     }
     @Test func regenerationRetainsCompletedDocumentWhenSynthesisFails() async throws {
@@ -134,9 +134,9 @@ private actor AnalysisMock: AnalysisProvider {
         try store.analysis.launch(store: store, lessonID: lesson.id, proposed: proposal(transcript), provider: mock)
         try await waitForFirst(mock); store.analysis.cancel(); await store.analysis.worker?.value
         let saved = try #require(try await AnalysisRepository(root: store.repository!.root).load(lessonID: lesson.id, sourceVersion: transcript.version))
-        #expect(saved.attempts.count == 1 && saved.attempts[0].usage.inputTokens == nil)
+        #expect(saved.attempts.count == 2 && saved.attempts[0].usage.inputTokens == nil)
         #expect(saved.attempts[0].outcome == "cancelled")
-        #expect(await mock.chunks.count == 1)
+        #expect(await mock.chunks.count == 2)
         #expect(await mock.merges == 0)
     }
     @Test func subtitleChangeStopsSavingNewChaptersAndRetainsAttemptUsage() async throws {
@@ -148,8 +148,8 @@ private actor AnalysisMock: AnalysisProvider {
         await store.analysis.worker?.value
         let saved = try #require(try await AnalysisRepository(root: store.repository!.root).load(lessonID: lesson.id, sourceVersion: transcript.version))
         #expect(saved.completed == nil && saved.task?.completedChunks.isEmpty == true)
-        #expect(saved.attempts.count == 1 && saved.attempts[0].usage.inputTokens == 100)
-        #expect(await mock.chunks.count == 1)
+        #expect(saved.attempts.count == 2 && saved.attempts[0].usage.inputTokens == 100)
+        #expect(await mock.chunks.count == 2)
     }
     @Test func conflictsPreventDispatchAndLoadNeverRunsSavedTasks() async throws {
         let (store, lesson, transcript) = try fixture(), mock = AnalysisMock()

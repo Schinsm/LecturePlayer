@@ -4,8 +4,21 @@ import Core
 
 @MainActor final class AppDelegate:NSObject,NSApplicationDelegate {
     var beforeTerminate:(() throws->Void)?
+    var drainBeforeTerminate:(() async->Void)?
+    private var terminating=false
     func applicationShouldTerminate(_ sender:NSApplication)->NSApplication.TerminateReply {
-        do{try beforeTerminate?();return .terminateNow}
+        if terminating {return .terminateLater}
+        do {
+            try beforeTerminate?()
+            guard let drainBeforeTerminate else{return .terminateNow}
+            terminating=true
+            Task {@MainActor in
+                await drainBeforeTerminate()
+                do {try beforeTerminate?();sender.reply(toApplicationShouldTerminate:true)}
+                catch {terminating=false;sender.reply(toApplicationShouldTerminate:false)}
+            }
+            return .terminateLater
+        }
         catch {let alert=NSAlert();alert.messageText="学习设置尚未保存";alert.informativeText="已保留待保存内容。请重试保存后再退出。\n"+error.localizedDescription;alert.addButton(withTitle:"返回应用");alert.runModal();return .terminateCancel}
     }
     func applicationDidFinishLaunching(_ notification:Notification) {

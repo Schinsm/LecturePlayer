@@ -60,19 +60,19 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         let backup=try reopened.snapshot();#expect(backup.schema==5)
         try backup.validate()
     }
-    @Test func failureDrainsPeerAndStopsNextLessonThenResumesOnlyMissing() async throws {
+    @Test func failureDrainsBothRequestsThenResumesOnlyMissing() async throws {
         let (s,t)=try V052AppTests().fixture(),mock=ProcessingProbe(fail:true)
         try s.processing.launch(try proposed(s,t),store:s,translationProvider:{_ in mock},analysisProvider:mock)
         await s.processing.worker?.value
-        #expect(await mock.translations==1); #expect(await mock.analyses==1); #expect(await mock.syntheses==0)
+        #expect(await mock.translations + mock.analyses == 2); #expect(await mock.syntheses==0)
         let record=try await AnalysisRepository(root:s.repository!.root).load(lessonID:s.library.lectures[0].id,sourceVersion:t.version)
-        #expect(record?.task?.completedChunks.count==1)
+        #expect(record?.completed == nil)
         #expect(s.processing.entries.allSatisfy{$0.status != "完成"})
         let reopened=AppStore(root:s.repository!.root),success=ProcessingProbe()
         #expect(!reopened.processing.running)
         try reopened.processing.launch(reopened.processing.entries,store:reopened,translationProvider:{_ in success},analysisProvider:success)
         await reopened.processing.worker?.value
-        #expect(await success.analyses==1)
+        #expect(await success.analyses + mock.analyses == 2)
         #expect(reopened.processing.entries.allSatisfy{$0.status=="完成"})
     }
     @Test func explicitPauseDrainsAndChangedVersionRejectedBeforeDispatch() async throws {
@@ -81,9 +81,9 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         try s.processing.launch(entries,store:s,translationProvider:{_ in mock},analysisProvider:mock)
         for _ in 0..<100 {if await mock.active==2 {break};try await Task.sleep(nanoseconds:2_000_000)}
         s.processing.pause(s);await s.processing.worker?.value
-        #expect(await mock.translations==1); #expect(await mock.analyses==1); #expect(await mock.syntheses==0)
+        #expect(await mock.translations + mock.analyses == 2); #expect(await mock.syntheses==0)
         s.updateLecture(entries[0].id){$0.transcriptVersion="changed"}
         #expect(throws:(any Error).self) {try s.processing.launch(entries,store:s,translationProvider:{_ in mock},analysisProvider:mock)}
-        #expect(await mock.translations==1)
+        #expect(await mock.translations + mock.analyses == 2)
     }
 }

@@ -66,6 +66,7 @@ public func validateTranslations(_ items:[TranslatedItem],targets:[Cue]) throws 
 public struct TranslationAttempt: Codable, Equatable, Identifiable, Sendable {
     public var variantID:String?
 
+    public var queueSeconds: Double?
     public var service: TranslationService?; public var requestSeconds: Double?; public var validationSeconds: Double?; public var databaseSeconds: Double?; public var sidecarSeconds: Double?
     public var id=UUID(); public var date=Date(); public var model: String; public var batchKey: String
     public var diagnostics: TranslationDiagnostics?

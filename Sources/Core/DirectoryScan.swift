@@ -1,14 +1,21 @@
 import Foundation
+import Darwin
 
-public struct FileStamp: Equatable, Sendable {
+public struct FileStamp: Codable, Hashable, Sendable {
     public var identity: String
     public var size: UInt64
     public var modified: Date
     public var changed: Date
+    public var modifiedNanoseconds:Int64?
+    public var changedNanoseconds:Int64?
     public static func read(_ url: URL) throws -> Self {
-        let a = try FileManager.default.attributesOfItem(atPath: url.path)
-        return Self(identity: try DirectoryIndex.identity(url), size: (a[.size] as? NSNumber)?.uint64Value ?? 0,
-                    modified: a[.modificationDate] as? Date ?? .distantPast, changed: a[.creationDate] as? Date ?? .distantPast)
+        var info=stat()
+        guard url.path.withCString({lstat($0,&info)})==0 else {throw CocoaError(.fileReadUnknown)}
+        guard (info.st_mode & S_IFMT)==S_IFREG else {throw Failure("不是普通文件")}
+        return Self(identity:try DirectoryIndex.identity(url),size:UInt64(max(0,info.st_size)),
+                    modified:Date(timeIntervalSince1970:Double(info.st_mtimespec.tv_sec)+Double(info.st_mtimespec.tv_nsec)/1e9),
+                    changed:Date(timeIntervalSince1970:Double(info.st_ctimespec.tv_sec)+Double(info.st_ctimespec.tv_nsec)/1e9),
+                    modifiedNanoseconds:Int64(info.st_mtimespec.tv_nsec),changedNanoseconds:Int64(info.st_ctimespec.tv_nsec))
     }
 }
 public struct DirectoryScanResult: Sendable {
@@ -23,8 +30,8 @@ public struct DirectoryScanResult: Sendable {
 }
 /// A scan owns no library records. Failure to read a subtree never means it was deleted.
 public actor DirectoryScanner {
-    private var hashes: [String: (FileStamp, String)] = [:]
-    public init() {}
+    private let fingerprints:MediaFingerprintCache
+    public init(cache:MediaFingerprintCache=MediaFingerprintCache()) {fingerprints=cache}
     public func scan(_ root: URL, settle: Duration = .seconds(1)) async throws -> DirectoryScanResult {
         var result = DirectoryScanResult(root: DirectoryIndex.canonical(root))
         var directory: ObjCBool = false
@@ -49,25 +56,39 @@ public actor DirectoryScanner {
         _ = try FileManager.default.contentsOfDirectory(atPath: root.path)
         visit(result.root)
         try await Task.sleep(for: settle)
-        var stable: [URL] = []
-        for url in result.files {
-            try Task.checkCancellation()
-            do {
-                let stamp = try FileStamp.read(url)
-                guard result.stamps[url.path] == stamp, stamp.size > 0 else {
-                    result.unstable = true; result.issues.append("正在写入，稍后重试：\(url.path)"); continue
+        struct Checked:Sendable {var url:URL;var media:IndexedMedia?;var issue:String?;var unstable=false}
+        let files=result.files,stamps=result.stamps,cache=fingerprints
+        var stable:[URL]=[]
+        await withTaskGroup(of:Checked.self) {group in
+            var cursor=0
+            func dispatch() {
+                guard cursor<files.count,!Task.isCancelled else{return}
+                let url=files[cursor];cursor += 1
+                group.addTask {
+                    do {
+                        try Task.checkCancellation()
+                        let stamp=try FileStamp.read(url)
+                        guard stamps[url.path]==stamp,stamp.size>0 else {return Checked(url:url,issue:"正在写入，稍后重试："+url.path,unstable:true)}
+                        var media:IndexedMedia?
+                        if ImportPlanner.media.contains(url.pathExtension.lowercased()) {
+                            let hash=try await cache.hash(url)
+                            guard try FileStamp.read(url)==stamp else {return Checked(url:url,issue:"校验期间文件改变："+url.path,unstable:true)}
+                            media=IndexedMedia(url:url,identity:stamp.identity,hash:hash)
+                        }
+                        return Checked(url:url,media:media)
+                    } catch {return Checked(url:url,issue:url.path+"："+error.localizedDescription)}
                 }
-                if ImportPlanner.media.contains(url.pathExtension.lowercased()) {
-                    let hash: String
-                    if let cached = hashes[url.path], cached.0 == stamp { hash = cached.1 }
-                    else { hash = try DirectoryIndex.hash(url) }
-                    guard try FileStamp.read(url) == stamp else { result.unstable = true; result.issues.append("校验期间文件改变：\(url.path)"); continue }
-                    hashes[url.path] = (stamp, hash)
-                    result.media.append(IndexedMedia(url: url, identity: stamp.identity, hash: hash))
-                }
-                stable.append(url)
-            } catch { result.issues.append("\(url.path)：\(error.localizedDescription)") }
+            }
+            dispatch();dispatch()
+            while let checked=await group.next() {
+                if let issue=checked.issue {result.issues.append(issue);result.unstable = result.unstable || checked.unstable}
+                else {stable.append(checked.url);if let media=checked.media {result.media.append(media)}}
+                dispatch()
+            }
         }
+        try Task.checkCancellation()
+        stable.sort{$0.path.localizedStandardCompare($1.path) == .orderedAscending}
+        result.media.sort{$0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending}
         result.files = stable; result.completed = Date()
         return result
     }

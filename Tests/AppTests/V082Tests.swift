@@ -39,18 +39,18 @@ private actor ChapterQueueMock:AnalysisProvider {
         let p=CaptionPresentation(),a=UUID(),b=UUID();var saved:[UUID:VideoCaptionPreferences]=[:]
         p.save={saved[$0]=$1};p.configure(a,value:VideoCaptionPreferences())
         p.update{$0.fontSize=29};p.update{$0.fontSize=30}
-        try await Task.sleep(for:.milliseconds(450));#expect(saved[a]?.fontSize==30)
+        for _ in 0..<100 {if saved[a]?.fontSize==30 {break};try await Task.sleep(for:.milliseconds(20))};#expect(saved[a]?.fontSize==30)
         p.setEditing(true);p.update{$0.fontSize=32};p.configure(b,value:VideoCaptionPreferences())
         #expect(saved[a]?.fontSize==32);#expect(p.value.fontSize==22)
         p.update{$0.fontSize=25};p.flush();#expect(saved[b]?.fontSize==25)
     }
-    @Test func chaptersSequentialSkipCompletedAndNoRestartRequest() async throws {
+    @Test func chaptersParallelSkipCompletedAndNoRestartRequest() async throws {
         let (store,_)=try V052AppTests().fixture(),mock=ChapterQueueMock()
         let pending=try entries(store);#expect(pending.count==2)
         try store.processing.launch(pending,store:store,analysisProvider:mock)
         store.current=store.library.lectures.last!.id
         await store.processing.worker?.value
-        #expect(await mock.calls==["analyze","synthesis","analyze","synthesis"])
+        #expect(await mock.calls==["analyze","analyze","synthesis","synthesis"])
         #expect(store.processing.entries.allSatisfy{$0.status=="完成" && $0.purpose=="chapters"})
         #expect(try entries(store).isEmpty)
         let reopened=AppStore(root:store.repository!.root)
@@ -63,14 +63,14 @@ private actor ChapterQueueMock:AnalysisProvider {
         let pending=try entries(store)
         #expect(throws:(any Error).self) {try store.processing.launch([pending[0],pending[0]],store:store,analysisProvider:bad)}
         try store.processing.launch(pending,store:store,analysisProvider:bad)
-        await store.processing.worker?.value;#expect(await bad.calls==["analyze"])
+        await store.processing.worker?.value;#expect(await bad.calls==["analyze","analyze"])
         let reopened=AppStore(root:store.repository!.root),good=ChapterQueueMock()
         #expect(!reopened.processing.running)
         let preview=try ChapterBatchPlanner.rows(ids:Set(pending.map(\.id)),store:reopened,config:AnalysisConfig(model:"changed"))
         #expect(preview.first{$0.id==pending[0].id}?.entry?.analysis?.config==pending[0].analysis?.config)
         try reopened.processing.launch(reopened.processing.entries,store:reopened,analysisProvider:good)
         await reopened.processing.worker?.value
-        #expect(await good.calls==["analyze","synthesis","analyze","synthesis"])
+        #expect(await good.calls==["analyze","analyze","synthesis","synthesis"])
     }
     @Test func pausedBlockResumesWithoutReanalyzingAndChangedVersionBlocks() async throws {
         let (store,_)=try V052AppTests().fixture(),mock=ChapterQueueMock()
@@ -78,11 +78,11 @@ private actor ChapterQueueMock:AnalysisProvider {
         try store.processing.launch(pending,store:store,analysisProvider:mock)
         while await mock.calls.isEmpty {try await Task.sleep(for:.milliseconds(2))}
         store.processing.pause(store);await store.processing.worker?.value
-        #expect(await mock.calls==["analyze"])
+        #expect(await mock.calls==["analyze","analyze"])
         let good=ChapterQueueMock()
         try store.processing.launch(store.processing.entries,store:store,analysisProvider:good)
         await store.processing.worker?.value
-        #expect(await good.calls==["synthesis","analyze","synthesis"])
+        #expect(await good.calls==["synthesis","synthesis"])
         store.updateLecture(pending[0].id){$0.transcriptVersion="changed"}
         #expect(throws:(any Error).self) {try store.processing.launch(pending,store:store,analysisProvider:good)}
     }

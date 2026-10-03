@@ -32,7 +32,8 @@ private actor ConcurrentMock:TranslationProvider {
         #expect(await mock.calls.count==3)
         #expect(result.translatedCount==25 && result.cues==t.cues)
         #expect(result.attempts?.count==3 && Set(result.attempts!.map(\.id)).count==3)
-        #expect(result.attempts!.allSatisfy{$0.requestSeconds != nil && $0.databaseSeconds != nil && $0.sidecarSeconds != nil && $0.validationSeconds != nil})
+        #expect(result.attempts!.last?.sidecarSeconds != nil) // Coalesced file writes are measured once.
+        #expect(result.attempts!.allSatisfy{$0.requestSeconds != nil && $0.databaseSeconds != nil && $0.validationSeconds != nil})
         #expect(result.usage!.allSatisfy{$0.attemptID != nil})
         #expect(result.translations.values.allSatisfy{$0.service == .openAI})
         #expect(try Data(contentsOf:subtitle)==t.original)

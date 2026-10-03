@@ -19,7 +19,7 @@ extension AppStore {
         try ImportPlanner.requireLocal(url); let stamps = try await verifyStable([url]); let identity = try Self.fileIdentity(url)
         guard !library.lectures.contains(where: { $0.mediaSources.contains { $0.identity == identity } }) else { throw Failure("视频已关联课件，请使用合并功能") }
         var source = MediaSource(role: item.mediaSources[0].role == .screen ? .camera : .screen, path: url.path, bookmark: try url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil), identity: identity)
-        source.contentHash = try await Task.detached { try DirectoryIndex.hash(url) }.value
+        source.contentHash = try await fingerprints.hash(url)
         try verifyUnchanged(stamps)
         let active = current == id; if active { playback.persist() }
         guard let index = library.lectures.firstIndex(where: { $0.id == id }), library.lectures[index].mediaSources.count == 1 else { throw Failure("课件已改变，请重试") }
@@ -157,7 +157,7 @@ extension AppStore {
     func relinkMedia(_ id: UUID, sourceID: UUID, url: URL) async throws {
         guard let item = library.lectures.first(where: { $0.id == id }), let source = item.mediaSources.first(where: { $0.id == sourceID }) else { throw Failure("原课件已改变") }
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-        let stamps = try await verifyStable([url]); let hash = try await Task.detached { try DirectoryIndex.hash(url) }.value
+        let stamps = try await verifyStable([url]); let hash = try await fingerprints.hash(url)
         try verifyUnchanged(stamps)
         if let old = source.contentHash, old != hash { throw Failure("所选视频内容不同，未改变原课件") }
         let identity = try Self.fileIdentity(url)
@@ -177,7 +177,12 @@ extension AppStore {
     }
     func verifyStable(_ urls: [URL]) async throws -> [URL: FileStamp] {
         let stamps = try Dictionary(uniqueKeysWithValues: urls.map { ($0, try FileStamp.read($0)) })
-        try await Task.sleep(for: .seconds(1)); try verifyUnchanged(stamps)
+        // A completed scan already observed these exact stamps across the settling interval.
+        let scanned=scanResult
+        if !stamps.allSatisfy({scanned?.stamps[$0.key.path]==$0.value && scanned?.files.contains($0.key)==true}) {
+            try await Task.sleep(for:.seconds(1))
+        }
+        try verifyUnchanged(stamps)
         guard stamps.values.allSatisfy({ $0.size > 0 }) else { throw Failure("文件尚未写入完成，请稍后重试") }
         return stamps
     }

@@ -52,7 +52,7 @@ struct TranslationConfirmation: View {
                 if config.providerID == .azure {Text("Azure 标准翻译不使用 OpenAI 的提示词和课程术语表。专业术语建议先试译检查。").font(.caption)}
                 Divider()
                 Text(message).foregroundStyle(.red).font(.caption)
-                HStack {Button("取消"){dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(config.confirmationLabel) { confirm(record) }.buttonStyle(.borderedProminent).disabled(batches.isEmpty || job.busy || !keyAvailability.configured(config.providerID)).keyboardShortcut(.defaultAction)}
+                HStack {Button("取消"){dismiss()}.keyboardShortcut(.cancelAction);Spacer();Button(config.confirmationLabel) { confirm(record) }.buttonStyle(.borderedProminent).disabled(batches.isEmpty || !job.acceptsQueuedWork || !keyAvailability.configured(config.providerID)).keyboardShortcut(.defaultAction)}
                 if !keyAvailability.configured(config.providerID) {Text(config.providerID == .apple ? "此系统不支持本机翻译。" : "请先在设置中保存所选服务的 Key。").font(.caption)}
             } else {Text(message.isEmpty ? "没有可翻译的英文字幕。" : message);Button("关闭"){dismiss()}}
         }.padding(24).frame(width:570)
@@ -60,11 +60,10 @@ struct TranslationConfirmation: View {
     }
     private func confirm(_ proposed:TranslationTaskState) {
         do {
-            guard !job.busy,let lesson,let latest=try store.repository?.read(lesson),latest.version==proposed.version else {throw Failure("字幕版本或任务状态已变化，请重新打开确认页")}
-            let provider=try job.provider(proposed.config)
+            guard job.acceptsQueuedWork,let lesson,let latest=try store.repository?.read(lesson),latest.version==proposed.version else {throw Failure("字幕版本或任务状态已变化，请重新打开确认页")}
             var task=proposed;task.state="排队"
             try job.saveTask(task,lesson:lesson,store:store)
-            job.details="";job.launch(store:store,ids:[lessonID],provider:provider);dismiss()
+            job.details="";try store.processing.launch([ImportProcessingEntry(id:lessonID,translation:task,analysis:nil)],store:store);dismiss()
         }catch{message=error.localizedDescription}
     }
 }
