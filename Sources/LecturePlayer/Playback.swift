@@ -12,6 +12,10 @@ import Core
     @Published private(set) var missing: Set<UUID> = []
     @Published private(set) var audioID: UUID?
     @Published private(set) var waiting = false
+    @Published private(set) var naturallyEnded = false
+    var completionChanged:((UUID,Bool)->Void)?
+    var shouldContinueOnSwitch:Bool {intentPlaying || naturallyEnded}
+    private var naturalEndEligible=false
     private var lastAudibleVolume = 1.0
     private let preferences: UserDefaults
     var lectureID: UUID?; var targetSpeed = 1.0
@@ -44,8 +48,9 @@ import Core
     func selectAudio(_ id: UUID) { guard audible.contains(id) else { return }; audioID = id; applyAudio() }
     func hasAudio(_ id: UUID) -> Bool { audible.contains(id) }
     private func applyAudio() { for source in views { player(for: source).volume = source.id == audioID ? Float(volume) : 0 } }
-    func load(_ lecture: Lecture) {
+    func load(_ lecture: Lecture,autoplay:Bool=false,restart:Bool=false) {
         close(); let token = UUID(); generation = token; lectureID = lecture.id; position = lecture.state.position; targetSpeed = lecture.state.speed; views = lecture.mediaSources; error = nil
+        intentPlaying=autoplay
         loadTask = Task { [weak self] in
             guard let self else { return }
             for source in self.views {
@@ -75,14 +80,19 @@ import Core
             }
             guard self.generation == token, !Task.isCancelled else { return }
             let available = self.views.filter { !self.missing.contains($0.id) }
-            guard !available.isEmpty else { return }
+            guard !available.isEmpty else {self.intentPlaying=false;return}
             self.clockID = available.max { (self.lengths[$0.id] ?? 0) - $0.relativeOffset < (self.lengths[$1.id] ?? 0) - $1.relativeOffset }?.id
-            self.duration = max(lecture.duration, lecture.state.position + 0.01, available.map { (self.lengths[$0.id] ?? 0) - $0.relativeOffset }.max() ?? 0)
+            let mediaDuration=available.map { (self.lengths[$0.id] ?? 0) - $0.relativeOffset }.max() ?? 0
+            self.duration = self.missing.isEmpty ? mediaDuration:max(lecture.duration,mediaDuration)
             self.audioID = available.first { $0.id == lecture.audioSourceID && self.audible.contains($0.id) }?.id ?? available.first { $0.role == .screen && self.audible.contains($0.id) }?.id ?? available.first { self.audible.contains($0.id) }?.id
             self.applyAudio()
-            let target = max(0, min(lecture.state.position, max(0, self.duration - 0.01)))
+            let target = restart ? 0:max(0,min(lecture.state.position,max(0,self.duration-0.01)))
             guard await self.seekPlayers(target), self.generation == token else { return }
-            self.position = target; self.ready = true; self.refreshEnded(); self.startLoop(token)
+            self.position = target; self.ready = true; self.refreshEnded()
+            self.naturalEndEligible=target<self.duration-0.025
+            if restart {self.completionChanged?(lecture.id,false)}
+            self.startLoop(token)
+            if self.intentPlaying && self.missing.isEmpty {self.scheduleStart()}else{self.intentPlaying=false}
         }
     }
     private func seekPlayers(_ value: Double) async -> Bool {
@@ -101,7 +111,11 @@ import Core
                 let actual = self.actualPosition
                 if actual.isFinite, abs(self.position-max(0,actual))>0.001 { self.position = max(0, actual) }; self.refreshEnded()
                 if self.intentPlaying {
-                    if self.position >= self.duration - 0.025 { self.pause() }
+                    if self.position >= self.duration - 0.025 {
+                        let natural=self.naturalEndEligible && self.missing.isEmpty && self.clockID.map{self.ended.contains($0)} == true
+                        self.pause()
+                        if natural,let id=self.lectureID {self.naturallyEnded=true;self.completionChanged?(id,true)}
+                    }
                     else {
                         let active = self.views.filter { self.eligible($0, at: self.position) }
                         if active.isEmpty { self.pause(); continue }
@@ -118,7 +132,7 @@ import Core
     private func refreshEnded() { let next = Set(views.filter { !missing.contains($0.id) && localTime($0, position) >= (lengths[$0.id] ?? 0) - 0.025 }.map(\.id)); if ended != next { ended = next } }
     func isBeforeStart(_ source: MediaSource) -> Bool { localTime(source, position) < 0 }
     func pause() { intentPlaying = false; controlTask?.cancel(); for p in players { p.cancelPendingPrerolls(); p.pause() }; playing = false; waiting = false; persist() }
-    func toggle() { guard ready else { return }; if !intentPlaying && !views.contains(where: { eligible($0, at: position) }) { error = "当前位置没有可播放的视角。请重新定位缺失文件，或跳到已有视角的时间范围。"; return }; if intentPlaying { pause() } else { intentPlaying = true; scheduleStart() } }
+    func toggle() { guard ready else { return }; if naturallyEnded {intentPlaying=true;seek(0);return}; if !intentPlaying && !views.contains(where: { eligible($0, at: position) }) { error = "当前位置没有可播放的视角。请重新定位缺失文件，或跳到已有视角的时间范围。"; return }; if intentPlaying { pause() } else { intentPlaying = true; scheduleStart() } }
     private func scheduleStart() {
         guard intentPlaying, !synchronizing else { return }
         synchronizing = true; let token = generation; let seekToken = seekGeneration
@@ -144,6 +158,8 @@ import Core
     func seek(_ value: Double) {
         guard ready, value.isFinite else { return }
         let target = max(0, min(value, duration)); let token = generation; let seekToken = UUID()
+        naturallyEnded=false;naturalEndEligible=target<duration-0.025
+        if let id=lectureID {completionChanged?(id,false)}
         seekGeneration = seekToken; pendingSeek = target; position = target; synchronizing = true; playing = false; waiting = intentPlaying
         controlTask?.cancel(); for p in players { p.cancelPendingPrerolls(); p.pause() }
         controlTask = Task { [weak self] in
@@ -155,7 +171,7 @@ import Core
     }
     func persist() { guard ready, let id = lectureID else { return }; let seconds = pendingSeek ?? actualPosition; guard seconds.isFinite else { return }; lastSave=Date();if let old=lastPersisted,old.0==id,abs(old.1-seconds)<0.001,old.2==duration{return};save?(id,max(0,seconds),duration);lastPersisted=(id,seconds,duration) }
     func close() {
-        persist(); ready = false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
+        persist(); ready = false;naturallyEnded=false;naturalEndEligible=false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
         loadTask?.cancel(); loop?.cancel(); controlTask?.cancel(); loadTask = nil; loop = nil; controlTask = nil
         for p in players { p.cancelPendingPrerolls(); p.pause(); p.replaceCurrentItem(with: nil) }
         for url in access { url.stopAccessingSecurityScopedResource() }; access = []; lengths = [:]; audible = []; missing = []; ended = []; views = []; lectureID = nil; playing = false; waiting = false; clockID = nil

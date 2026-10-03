@@ -84,6 +84,7 @@ struct VideoPane: View {
                 Text(error).foregroundStyle(.red)
                 Button("重新定位文件") { store.relocate() }
             }
+            PlaylistEndAction(store:store,playback:playback,presentation:store.playlist)
             Slider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(1, playback.duration))
                 .disabled(!playback.ready).accessibilityLabel("播放位置")
             ViewThatFits(in: .horizontal) {
@@ -121,6 +122,7 @@ struct VideoPane: View {
     @LPState private var volumeOpen = false
     private func audioControls(compact: Bool) -> some View {
         HStack(spacing: 10) {
+                CoursePlaylistButton(store:store)
                 VideoCaptionControls(store: store, presentation:store.captions)
                 Picker("倍速", selection: Binding(get: { store.lecture?.state.speed ?? 1 }, set: { speed in
                     if let id = store.current { store.updateLecture(id) { $0.state.speed = speed }; playback.speed(speed) }

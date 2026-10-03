@@ -32,6 +32,8 @@ import UniformTypeIdentifiers
     var rootGeneration = UUID()
     var watchesEnabled = true
     let captions = CaptionPresentation()
+    let captionPreferences:GlobalCaptionPreferences
+    let playlist=CoursePlaylistPresentation()
     let requests=RequestScheduler()
     let processing = ImportProcessingCoordinator()
     let analysis = AnalysisJob(); let transfer = MediaTransfer(); let translation = TranslationJob(); let playback = Playback(); var repository: Repository?
@@ -43,13 +45,15 @@ import UniformTypeIdentifiers
         names.insert(library.courses.first(where: { $0.id == lecture.courseID })?.name ?? "", at: 0)
         return names.joined(separator: " / ")
     }
-    init(root explicitRoot: URL? = nil) {
+    init(root explicitRoot: URL? = nil,preferences:UserDefaults? = nil) {
+        let defaults=preferences ?? explicitRoot.flatMap{UserDefaults(suiteName:"local.LecturePlayer.Isolated."+digest($0.path))} ?? .standard
+        captionPreferences=GlobalCaptionPreferences(defaults:defaults)
         do {
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
             watchesEnabled = explicitRoot == nil && Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDisableAutomaticMaintenance") as? Bool != true
             fingerprints=MediaFingerprintCache(storage:root.appendingPathComponent("Cache/media-fingerprints.json"))
             repository = try Repository(root: root); library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
-            let upgradeSnapshot = root.appendingPathComponent("before-v086.json")
+            let upgradeSnapshot = root.appendingPathComponent("before-v087.json")
             if !library.lectures.isEmpty, !FileManager.default.fileExists(atPath: upgradeSnapshot.path) { try repository!.writeRecoverySnapshot(library, to: upgradeSnapshot) }
             if watchesEnabled {
                 refreshPolicy=RefreshPolicy(rawValue:UserDefaults.standard.string(forKey:"directoryRefreshPolicy") ?? "automatic") ?? .automatic
@@ -57,7 +61,8 @@ import UniformTypeIdentifiers
                 scanSummary=UserDefaults.standard.string(forKey:refreshPreferenceKey+"-result") ?? "尚未扫描"
             }
             readerPresentation.save = {[weak self] id,panel in self?.updateLecture(id,quiet:true){$0.studyPanel=panel}}
-            captions.save = { [weak self] id,value in self?.updateLecture(id) {$0.videoCaptions=value} }
+            captionPreferences.initialize(legacy:library.lectures.first{$0.id==library.lastLecture}?.videoCaptions)
+            captions.save = { [weak self] _,value in self?.captionPreferences.save(value) }
             translation.restore(self);processing.restore(self)
             Task { [weak self] in await self?.translation.writer.observeFiles { [weak self] id,saved in
                 guard let self,let lesson=self.library.lectures.first(where:{$0.id==id}),lesson.transcriptVersion==saved.transcript.version else{return}
@@ -66,6 +71,7 @@ import UniformTypeIdentifiers
             }}
             directoryWatch.changed = { [weak self] in guard let self,self.refreshPolicy == .automatic else { return };self.refreshDirectory() }
             configureRefreshSchedule()
+            playback.completionChanged = { [weak self] id,finished in self?.updateLecture(id,quiet:true){$0.finished=finished} }
             playback.save = { [weak self] id, seconds, duration in self?.updateLecture(id,quiet:true) { $0.state.record(seconds, ready: true); $0.duration = duration } }
             if watchesEnabled { Task { self.recoverSubtitleLocations(); self.refreshIfDue(startup:true) } }
             if let id = library.lastLecture, library.lectures.contains(where: { $0.id == id }) { open(id) }
@@ -86,11 +92,24 @@ import UniformTypeIdentifiers
         let old=library.lectures[i];var next=old;action(&next)
         guard old != next else{return}
         quietLibraryUpdate=quiet;library.lectures[i]=next;quietLibraryUpdate=false
+        playlist.updateRow(next)
         repository?.commits.submit(old:old,new:next) {[weak self] message in if let message {self?.error="设置暂未保存，可重试："+message}}
     }
-    func open(_ id: UUID) {
-        readerPresentation.flush();captions.flush(); playback.close(); guard let item = library.lectures.first(where: { $0.id == id }) else { return }
-        readerPresentation.configure(id,panel:item.studyPanel ?? "transcript");current = id; captions.configure(id,value:item.videoCaptions ?? VideoCaptionPreferences()); transcript = nil; perform { transcript = try repository?.read(item) }; library.lastLecture = id; persist(); playback.load(item)
+    func open(_ id: UUID) {openLesson(id,autoplay:false,restart:false)}
+    private func openLesson(_ id:UUID,autoplay:Bool,restart:Bool) {
+        guard let item=library.lectures.first(where:{$0.id==id}) else{return}
+        readerPresentation.flush();captions.flush();playback.close();flushMetadata()
+        readerPresentation.configure(id,panel:item.studyPanel ?? "transcript")
+        current=id;captions.configure(id,value:captionPreferences.value);transcript=nil
+        perform {transcript=try repository?.read(item)}
+        library.lastLecture=id;persist();playback.load(item,autoplay:autoplay,restart:restart)
+    }
+    @discardableResult func switchFromPlaylist(to id:UUID)->Bool {
+        guard let active=lecture,let target=library.lectures.first(where:{$0.id==id}),target.courseID==active.courseID,target.archived != true else{return false}
+        if id==current {return true}
+        let autoplay=playback.shouldContinueOnSwitch
+        openLesson(id,autoplay:autoplay,restart:target.finished)
+        return true
     }
     func openSelectedDirectory() {
         if let path=library.folders.first(where:{$0.id==selectedFolder})?.directoryPath ?? library.courses.first(where:{$0.id==selectedCourse})?.directoryPath ?? library.directoryRoot {NSWorkspace.shared.open(URL(fileURLWithPath:path))}

@@ -6,11 +6,11 @@ A native macOS lecture player with synchronized dual video, movable picture-in-p
 
 **推荐下载：[0.8.9.1 预发布版](https://github.com/Schinsm/LecturePlayer/releases/tag/v0.8.9.1)** · [全部版本](https://github.com/Schinsm/LecturePlayer/releases)
 
-本源码快照：**0.8.6**。历史版本，不建议日常使用。尚未完成全部实际界面和长时间播放验收，偶发黑屏不能视为已彻底解决。
+本源码快照：**0.8.7**。历史版本，不建议日常使用。尚未完成全部实际界面和长时间播放验收，偶发黑屏不能视为已彻底解决。
 
 ## 安装
 
-需要 **Apple Silicon Mac、macOS 14 或更新版本**。从对应 Release 下载 `LecturePlayer-0.8.6-macOS-arm64.zip`，解压后将应用拖入 Applications；打开新版前退出旧版。
+需要 **Apple Silicon Mac、macOS 14 或更新版本**。从对应 Release 下载 `LecturePlayer-0.8.7-macOS-arm64.zip`，解压后将应用拖入 Applications；打开新版前退出旧版。
 
 应用使用本地临时签名，**没有 Apple Developer ID 签名或公证**。macOS 可能阻止首次启动；核验下载来源及 SHA-256 后，可在系统设置的隐私与安全性中按系统提示允许打开。不需要关闭系统安全保护。
 
@@ -39,7 +39,7 @@ LP_WORK=/private/tmp/LecturePlayer-public-build LP_DEST=/private/tmp/LecturePlay
 
 ## 版本记录
 
-转写排版、章节搜索与当前位置样式、导入缓存和双请求调度。
+课程播放列表和全局字幕外观记忆。
 
 参见 [CHANGELOG](CHANGELOG.md)、[公开整理说明](PUBLICATION.md) 和 [验证范围](VALIDATION.md)。欢迎通过 Issues 报告复现步骤、应用版本和系统版本；提交前移除密钥和课程私人内容。
 

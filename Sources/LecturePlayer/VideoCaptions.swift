@@ -19,6 +19,7 @@ struct VideoCaptionControls: View {
                 .popover(isPresented: $settings) {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("视频字幕").font(.headline)
+                        Text("设置会应用到所有视频，并在下次打开时保留。").font(.caption).foregroundStyle(.secondary)
                         Picker("语言", selection: Binding(get: {value.mode}, set: {mode in update {$0.mode = mode}})) {
                             ForEach(["双语", "英文", "中文"], id: \.self) {Text($0)}
                         }.pickerStyle(.segmented)

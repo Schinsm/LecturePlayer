@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ./Scripts/swift.sh build -c release
 LP_WORK="${LP_WORK:-/private/tmp/LecturePlayer-build-$UID}"
-LP_DEST="${LP_DEST:-$HOME/Applications/Lecture Player 0.8.6.app}"
+LP_DEST="${LP_DEST:-$HOME/Applications/Lecture Player 0.8.7.app}"
 LP_STAGE_APP="$(mktemp -d "${TMPDIR:-/private/tmp/}LecturePlayerPackage.XXXXXX")"
 LP_APP="$LP_STAGE_APP/Lecture Player.app"
 mkdir -p "$LP_APP/Contents/MacOS" "$LP_APP/Contents/Resources"
@@ -19,8 +19,8 @@ cat > "$LP_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Lecture Player</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.8.6</string>
-<key>CFBundleVersion</key><string>21</string>
+<key>CFBundleShortVersionString</key><string>0.8.7</string>
+<key>CFBundleVersion</key><string>22</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -31,7 +31,7 @@ if xattr -p com.apple.FinderInfo "$LP_APP" >/dev/null 2>&1; then
 fi
 codesign --force --sign - "$LP_APP"
 codesign --verify --deep --strict "$LP_APP"
-LP_ZIP="$PWD/../LecturePlayer-0.8.6-app.zip"
+LP_ZIP="$PWD/../LecturePlayer-0.8.7-app.zip"
 ditto -c -k --norsrc --noextattr --keepParent "$LP_APP" "$LP_ZIP"
 LP_VERIFY="$(mktemp -d "${TMPDIR:-/private/tmp/}LecturePlayerVerify.XXXXXX")"
 ditto -x -k "$LP_ZIP" "$LP_VERIFY"

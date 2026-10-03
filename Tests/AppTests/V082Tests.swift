@@ -6,9 +6,12 @@ import Testing
 private actor ChapterQueueMock:AnalysisProvider {
     var calls:[String]=[]
     var fail=false
-    init(fail:Bool=false) {self.fail=fail}
+    var held=false
+    init(fail:Bool=false,held:Bool=false) {self.fail=fail;self.held=held}
+    func release(){held=false}
     func analyze(_ chunk:AnalysisChunk,config:AnalysisConfig) async throws -> AnalysisResponse<[AnalysisChapter]> {
         calls.append("analyze")
+        while held {try await Task.sleep(for:.milliseconds(5))}
         try await Task.sleep(for:.milliseconds(80))
         let result=TranslationResult(items:[],inputTokens:12,outputTokens:8,problem:fail ? "mock failure" : nil)
         return AnalysisResponse(value:try HierarchicalAnalysis.build([.init(start:"c0001",title:"知识点",points:["说明"])],chunk:chunk),result:result)
@@ -73,11 +76,12 @@ private actor ChapterQueueMock:AnalysisProvider {
         #expect(await good.calls==["analyze","analyze","synthesis","synthesis"])
     }
     @Test func pausedBlockResumesWithoutReanalyzingAndChangedVersionBlocks() async throws {
-        let (store,_)=try V052AppTests().fixture(),mock=ChapterQueueMock()
+        let (store,_)=try V052AppTests().fixture(),mock=ChapterQueueMock(held:true)
         let pending=try entries(store)
         try store.processing.launch(pending,store:store,analysisProvider:mock)
-        while await mock.calls.isEmpty {try await Task.sleep(for:.milliseconds(2))}
-        store.processing.pause(store);await store.processing.worker?.value
+        let deadline=Date().addingTimeInterval(10)
+        while await mock.calls.count<2,Date()<deadline {try await Task.sleep(for:.milliseconds(2))}
+        store.processing.pause(store);await mock.release();await store.processing.worker?.value
         #expect(await mock.calls==["analyze","analyze"])
         let good=ChapterQueueMock()
         try store.processing.launch(store.processing.entries,store:store,analysisProvider:good)

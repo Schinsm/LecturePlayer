@@ -42,7 +42,7 @@ struct DirectoryPresentationIndex {
     func select(course:UUID?,folder:UUID?=nil) {self.course=course;self.folder=folder}
 }
 extension AppStore {
-    func refreshDirectoryPresentation(){navigation.update(library,pending:pendingFiles)}
+    func refreshDirectoryPresentation(){navigation.update(library,pending:pendingFiles);playlist.update(library)}
 }
 struct DirectorySidebar:View {
     @ObservedObject var navigation:DirectoryPresentation
