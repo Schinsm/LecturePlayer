@@ -12,7 +12,7 @@ struct PlayerPage: View {
         VStack(spacing: 0) {
             PlaybackHeader(store: store)
             TransferStatus(transfer: store.transfer).padding(.horizontal, 12)
-            StudySplit(identity:store.current, rightVisible:readerVisible) {
+            StudySplit(identity:store.current, rightVisible:readerVisible, toggleReader:{readerVisible.toggle()}) {
                 VideoPane(store: store, playback: store.playback)
             } right: {
                 StudyReaderPane(store: store, playback: store.playback)
@@ -78,7 +78,7 @@ struct VideoPane: View {
     var body: some View {
         VStack(spacing: 10) {
             DualVideoView(store: store, playback: playback)
-                .overlay(alignment: .trailing) { ReaderPaneToggle().padding(.trailing, 4) }
+                .background(VideoEdgeAnchor())
                 .overlay(alignment: .bottom) { VideoCaptionOverlay(store: store, playback: playback, presentation:store.captions) }
             if let error = playback.error {
                 Text(error).foregroundStyle(.red)
@@ -374,19 +374,3 @@ struct ReadingUnitCell: View, Equatable {
     }
 }
 
-/// Kept at the video edge even when the right pane is collapsed.
-struct ReaderPaneToggle:View {
-    @AppStorage("readerPaneVisible") private var visible = true
-    @LPState private var hovering = false
-    var body:some View {
-        Button {visible.toggle()} label: {
-            Image(systemName:visible ? "chevron.right":"chevron.left")
-                .font(.system(size:14,weight:.semibold)).foregroundStyle(.white)
-                .frame(width:26,height:56)
-                .background(.black.opacity(hovering ? 0.7:0.4),in:RoundedRectangle(cornerRadius:6))
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).onHover{hovering=$0}
-            .help(visible ? "隐藏转写与章节":"显示转写与章节")
-            .accessibilityLabel(visible ? "隐藏转写与章节":"显示转写与章节")
-    }
-}

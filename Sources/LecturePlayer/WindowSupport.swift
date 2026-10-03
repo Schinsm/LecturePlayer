@@ -47,6 +47,7 @@ struct PlayerKeys:NSViewRepresentable {
         func handle(_ event:NSEvent)->NSEvent? {
             guard enabled,let window,event.window === window,!isHiddenOrHasHiddenAncestor,window.attachedSheet == nil,NSApp.modalWindow == nil else{return event}
             let responder=window.firstResponder
+            if responder is ReaderPaneToggle {return event}
             if let text=responder as? NSTextView {
                 if text.isEditable || text.hasMarkedText() {return event}
                 if text.selectedRange().length>0 && [123,124,125,126].contains(event.keyCode) {return event}
@@ -83,17 +84,20 @@ struct WindowPersistence:NSViewRepresentable {
 }
 
 struct StudySplit<Left: View, Right: View>: NSViewRepresentable {
-    let left: Left; let right: Right;let identity:UUID?; let rightVisible:Bool
+    let left: Left; let right: Right;let identity:UUID?; let rightVisible:Bool; let toggleReader:()->Void
     class Coordinator {var identity:UUID?}
     func makeCoordinator()->Coordinator {Coordinator()}
-    init(identity:UUID?=nil,rightVisible:Bool=true,@ViewBuilder left: () -> Left, @ViewBuilder right: () -> Right) { self.rightVisible=rightVisible;self.identity=identity;self.left = left(); self.right = right() }
-    func makeNSView(context: Context) -> Split {
+    init(identity:UUID?=nil,rightVisible:Bool=true,toggleReader:@escaping ()->Void = {},@ViewBuilder left: () -> Left, @ViewBuilder right: () -> Right) { self.toggleReader=toggleReader;self.rightVisible=rightVisible;self.identity=identity;self.left = left(); self.right = right() }
+    func makeNSView(context: Context) -> ReaderSplitContainer {
         let split = Split(); split.isVertical = true; split.dividerStyle = .thin
         split.addArrangedSubview(NSHostingView(rootView: left)); split.addArrangedSubview(NSHostingView(rootView: right))
-        context.coordinator.identity=identity;split.delegate = split; split.setRightVisible(rightVisible); return split
+        context.coordinator.identity=identity;split.delegate = split; split.setRightVisible(rightVisible);
+        let host=ReaderSplitContainer(split:split);host.configure(visible:rightVisible,toggle:toggleReader);return host
     }
-    func updateNSView(_ split: Split, context: Context) {
-        split.setRightVisible(rightVisible)
+    func updateNSView(_ host: ReaderSplitContainer, context: Context) {
+        guard let split=host.split as? Split else{return}
+        host.configure(visible:rightVisible,toggle:toggleReader)
+        split.setRightVisible(rightVisible);host.needsLayout=true
         guard context.coordinator.identity != identity else{return};context.coordinator.identity=identity
         (split.arrangedSubviews[0] as? NSHostingView<Left>)?.rootView = left
         (split.arrangedSubviews[1] as? NSHostingView<Right>)?.rootView = right
@@ -143,6 +147,7 @@ struct StudySplit<Left: View, Right: View>: NSViewRepresentable {
         func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { 420 }
         func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposed: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat { bounds.width - 300 }
         func splitViewDidResizeSubviews(_ notification: Notification) {
+            (superview as? ReaderSplitContainer)?.needsLayout=true
             guard initialized, rightVisible, !restoring, bounds.width > 0, let first = arrangedSubviews.first else { return }
             let ratio=first.frame.width / bounds.width; expandedRatio=ratio
             saveTimer?.invalidate();saveTimer=Timer.scheduledTimer(withTimeInterval:0.3,repeats:false){_ in UserDefaults.standard.set(ratio,forKey:"studySplitRatio")}
