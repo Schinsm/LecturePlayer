@@ -8,6 +8,7 @@ final class MetadataCommitQueue: @unchecked Sendable {
     private let container:ModelContainer
     private var pending:[UUID:[String:Any]]=[:]
     private var lastError:Error?
+    private var pendingLast: Data?
     init(container:ModelContainer){self.container=container}
     static func difference(_ old:Any,_ new:Any)->[String:Any] {
         guard let before=old as? [String:Any],let after=new as? [String:Any] else{return [:]}
@@ -41,7 +42,7 @@ final class MetadataCommitQueue: @unchecked Sendable {
         var result=first;for (k,v) in next {if let child=v as? [String:Any] {result[k]=compose(result[k] as? [String:Any] ?? [:],child)}else{result[k]=v}};return result
     }
     private func commit() throws {
-        guard !pending.isEmpty else{return}
+        guard !pending.isEmpty || pendingLast != nil else{return}
         try PerformanceTrace.measure("metadata.commit") {
             let context=ModelContext(container);context.autosaveEnabled=false
             for (id,patch) in pending where !patch.isEmpty {
@@ -51,7 +52,22 @@ final class MetadataCommitQueue: @unchecked Sendable {
                 let old=try JSONSerialization.jsonObject(with:row.payload) as? [String:Any] ?? [:]
                 row.payload=try JSONSerialization.data(withJSONObject:Self.merge(patch,into:old),options:[.sortedKeys])
             }
-            do{try context.save();pending.removeAll()}catch{context.rollback();throw error}
+            if let payload=pendingLast {
+                let key="last"; var fetch=FetchDescriptor<MetadataRecord>(predicate:#Predicate{$0.key == key}); fetch.fetchLimit=1
+                if let row=try context.fetch(fetch).first { row.payload=payload } else { context.insert(MetadataRecord(key:key,payload:payload)) }
+            }
+            do{try context.save();pending.removeAll();pendingLast=nil}catch{context.rollback();throw error}
+        }
+    }
+    func setLastLesson(_ id: UUID, completion: @escaping (Error?) -> Void) {
+        queue.async { [self] in
+            do { pendingLast=try Codec.encode(Optional(id)); if let lastError {throw lastError}; try commit(); DispatchQueue.main.async {completion(nil)} }
+            catch {lastError=error;DispatchQueue.main.async {completion(error)}}
+        }
+    }
+    func flushAsync() async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in do {try commit();lastError=nil;c.resume()} catch {lastError=error;c.resume(throwing:error)} }
         }
     }
     /// Used only at explicit durable boundaries, never in view rendering.

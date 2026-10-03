@@ -7,6 +7,7 @@ struct StudyReaderPane: View {
     @AppStorage("readerPaneVisible") private var readerVisible = true
     @ObservedObject var store: AppStore
     let playback: Playback
+    @LPState private var chaptersCreated = false
     @LPState private var sourceRequest: ReaderSourceRequest?
     @ObservedObject private var session:ReaderSession
     init(store:AppStore,playback:Playback){self.store=store;self.playback=playback;session=store.readerPresentation.session(store.current ?? UUID())}
@@ -21,11 +22,12 @@ struct StudyReaderPane: View {
             ZStack {
                 ReaderPane(store: store, playback: playback, visible: readerVisible && panel == "transcript", sourceRequest: sourceRequest)
                     .opacity(panel == "transcript" ? 1 : 0).allowsHitTesting(panel == "transcript").accessibilityHidden(panel != "transcript")
-                AnalysisPanel(store: store, job: store.analysis, translation: store.translation, playback: playback, visible:readerVisible && panel == "chapters") {cueID in
+                if chaptersCreated { AnalysisPanel(store: store, job: store.analysis, translation: store.translation, playback: playback, visible:readerVisible && panel == "chapters") {cueID in
                     setPanel("transcript"); sourceRequest = ReaderSourceRequest(cueID: cueID)
-                }.opacity(panel == "chapters" ? 1 : 0).allowsHitTesting(panel == "chapters").accessibilityHidden(panel != "chapters")
+                }.opacity(panel == "chapters" ? 1 : 0).allowsHitTesting(panel == "chapters").accessibilityHidden(panel != "chapters") }
             }
-        }
+        }.onAppear { if panel == "chapters" { chaptersCreated=true } }
+        .onChange(of:panel) { _, value in if value == "chapters" { chaptersCreated=true } }
     }
     private func setPanel(_ value: String) {if let id = store.current {store.readerPresentation.select(value,lesson:id)}}
 }

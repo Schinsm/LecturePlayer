@@ -7,12 +7,32 @@ import UniformTypeIdentifiers
     var library = Library() {didSet{if !quietLibraryUpdate {objectWillChange.send(); refreshDirectoryPresentation()}}}
     private var quietLibraryUpdate=false
     let performanceProbe=MainThreadProbe()
+    let lessonLoader = LessonLoadCoordinator()
+    @Published private(set) var lessonLoading = false
+    @Published private(set) var preparedReading: PreparedReading?
+    private var lessonLoadTask: Task<Void, Never>?
+    private var lessonSwitchAutoplay=false
+    private var lessonLoadID = UUID()
+    private var applyingLoadedReading = false
+    private var readingBuild: Task<Void,Never>?
+    private func rebuildPreparedReading() {
+        readingBuild?.cancel()
+        guard let transcript else {preparedReading=nil;return}
+        let id=current, version=transcript.version, cues=transcript.cues
+        readingBuild=Task { [weak self] in
+            let work=Task.detached(priority:.userInitiated) { PreparedReading(cues) }
+            let result=await withTaskCancellationHandler(operation:{await work.value},onCancel:{work.cancel()})
+            guard !Task.isCancelled,let self,self.current==id,self.transcript?.version==version else{return}
+            self.preparedReading=result
+        }
+    }
+    private var memoryPressure: DispatchSourceMemoryPressure?
     let usagePresentation=UsagePresentation()
     var usageCache:UsageDataset?
     var usageCacheToken=""
     let navigation=DirectoryPresentation()
     let readerPresentation=ReaderPresentationState()
-     @Published var transcript: Transcript?; @Published var current: UUID?; var selectedCourse:UUID? {get{navigation.course} set{navigation.course=newValue}}
+     @Published var transcript: Transcript? { didSet { if !applyingLoadedReading && oldValue?.cues != transcript?.cues { rebuildPreparedReading() } } }; @Published var current: UUID?; var selectedCourse:UUID? {get{navigation.course} set{navigation.course=newValue}}
     var selectedFolder:UUID? {get{navigation.folder} set{navigation.folder=newValue}}
      @Published var error: String?; @Published var fatal = false
     @Published var importStatus=""
@@ -51,6 +71,8 @@ import UniformTypeIdentifiers
     init(root explicitRoot: URL? = nil,preferences:UserDefaults? = nil) {
         let defaults=preferences ?? explicitRoot.flatMap{UserDefaults(suiteName:"local.LecturePlayer.Isolated."+digest($0.path))} ?? .standard
         pipPreferences=PictureInPicturePreferences(defaults:defaults)
+        let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
+        pressure.setEventHandler { [lessonLoader] in Task { await lessonLoader.clear() } }; pressure.resume(); memoryPressure = pressure
         captionPreferences=GlobalCaptionPreferences(defaults:defaults)
         do {
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
@@ -82,7 +104,7 @@ import UniformTypeIdentifiers
             if let id = library.lastLecture, library.lectures.contains(where: { $0.id == id }) { open(id) }
         } catch { self.error = "资料库打开失败（未删除或重建）：\(error.localizedDescription)"; fatal = true }
     }
-    deinit { refreshTimer?.invalidate() }
+    deinit { refreshTimer?.invalidate(); lessonLoadTask?.cancel(); memoryPressure?.cancel() }
     func drainGeneration() async {
         if processing.running {processing.pause(self)} else {translation.pause();analysis.pause()}
         await requests.pause()
@@ -98,6 +120,7 @@ import UniformTypeIdentifiers
         if let root=repository?.root {StorageDiagnostics.record(root:root,operation:.metadata,outcome:.failed,error:failure)}
     }
     func persist() {guard !fatal else{return};do {try repository?.save(library)}catch{storageFailed(error)}}
+    func flushMetadataAsync() async { readerPresentation.flush(); do { try await repository?.commits.flushAsync() } catch { storageFailed(error) } }
     func flushMetadata() {readerPresentation.flush();do{try repository?.commits.flush()}catch{storageFailed(error)}}
     func updateLecture(_ id: UUID, quiet:Bool=false, _ action: (inout Lecture)->Void) {
         guard let i=library.lectures.firstIndex(where:{$0.id==id}) else{return}
@@ -109,18 +132,35 @@ import UniformTypeIdentifiers
     }
     func open(_ id: UUID) {openLesson(id,autoplay:false,restart:false)}
     private func openLesson(_ id:UUID,autoplay:Bool,restart:Bool) {
-        pipPreferences.flush()
-        guard let item=library.lectures.first(where:{$0.id==id}) else{return}
-        readerPresentation.flush();captions.flush();playback.close();flushMetadata()
+        let started = ProcessInfo.processInfo.systemUptime
+        guard let item=library.lectures.first(where:{$0.id==id}), let root=repository?.root else{return}
+        pipPreferences.flush(); readerPresentation.flush(); captions.flush(); playback.close()
+        lessonLoadTask?.cancel(); let loadID=UUID(); lessonLoadID=loadID
         readerPresentation.configure(id,panel:item.studyPanel ?? "transcript")
-        current=id;captions.configure(id,value:captionPreferences.value);transcript=nil
-        perform {transcript=try repository?.read(item)}
-        library.lastLecture=id;persist();playback.load(item,autoplay:autoplay,restart:restart)
+        lessonSwitchAutoplay=autoplay;current=id; captions.configure(id,value:captionPreferences.value); transcript=nil; preparedReading=nil; lessonLoading=true
+        quietLibraryUpdate=true; library.lastLecture=id; quietLibraryUpdate=false
+        repository?.commits.setLastLesson(id) { [weak self] failure in if let failure { self?.storageFailed(failure) } }
+        PerformanceTrace.record("lesson.initialState", ProcessInfo.processInfo.systemUptime-started)
+        // Let SwiftUI paint the new title before starting any media setup.
+        lessonLoadTask = Task { [weak self, lessonLoader] in
+            await Task.yield()
+            guard let self, self.lessonLoadID == loadID, !Task.isCancelled else { return }
+            self.playback.load(item,autoplay:autoplay,restart:restart)
+            do {
+                let loaded = try await lessonLoader.load(item,root:root)
+                guard self.lessonLoadID == loadID, !Task.isCancelled else { return }
+                // A background translation may have delivered a newer revision while loading.
+                if self.transcript == nil { self.applyingLoadedReading=true; self.preparedReading=loaded.reading; self.transcript=loaded.transcript; self.applyingLoadedReading=false }
+                self.lessonLoading=false
+                PerformanceTrace.record("lesson.readyReading",ProcessInfo.processInfo.systemUptime-started)
+            } catch is CancellationError { }
+            catch { guard self.lessonLoadID == loadID else { return }; self.lessonLoading=false; self.error="转写暂时无法载入："+error.localizedDescription }
+        }
     }
     @discardableResult func switchFromPlaylist(to id:UUID)->Bool {
         guard let active=lecture,let target=library.lectures.first(where:{$0.id==id}),target.courseID==active.courseID,target.archived != true else{return false}
         if id==current {return true}
-        let autoplay=playback.shouldContinueOnSwitch
+        let autoplay=lessonLoading ? lessonSwitchAutoplay : playback.shouldContinueOnSwitch
         openLesson(id,autoplay:autoplay,restart:target.finished)
         return true
     }
@@ -135,7 +175,7 @@ import UniformTypeIdentifiers
     func displayTranscript(_ value:Transcript, for id:UUID) {
         if current==id {transcript=value.viewing(library.lectures.first{$0.id==id}?.selectedTranslationVariantID ?? transcript?.variantID ?? "openAI")}
     }
-    func back() { pipPreferences.flush(); captions.flush(); playback.close(); flushMetadata(); current = nil; transcript = nil }
+    func back() { lessonLoadTask?.cancel(); lessonLoadID=UUID(); lessonLoading=false; pipPreferences.flush(); readerPresentation.flush(); captions.flush(); playback.close(); current = nil; transcript = nil; preparedReading=nil }
     func saveTranscript(_ value: Transcript, lectureID: UUID) throws { try repository?.write(value, for: lectureID); if current == lectureID { transcript = value }; saveVisibleTranslations(lectureID) }
     func addCourse(_ name: String) { let course = Course(name: name, order: library.courses.count); library.courses.append(course); selectedCourse = course.id; selectedFolder = nil; persist() }
     func addFolder(_ name: String) { guard let course = selectedCourse else { return }; library.folders.append(Folder(name: name, courseID: course, parentID: selectedFolder)); persist() }

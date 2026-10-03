@@ -82,12 +82,12 @@ struct VideoCaptionOverlay: View {
         }.allowsHitTesting(false)
             .onAppear { rebuild(); notifyIfNeeded() }
             .onChange(of: preferences.grouped) {_,_ in rebuild()}
-            .onChange(of: store.transcript?.version) {_,_ in rebuild()}
+            .onChange(of: store.preparedReading?.revision) {_,_ in rebuild()}
             .onChange(of: store.lecture?.state.offset) {_,_ in update(playback.position)}
             .onChange(of: preferences.enabled) {_,_ in notifyIfNeeded()}
             .onChange(of: preferences.mode) {_,_ in notifyIfNeeded()}
             .onChange(of: store.transcript?.variantID) {_,_ in notifyIfNeeded()}
-            .onReceive(playback.$position) {update($0)}
+            .onReceive(playback.clock.$snapshot.map(\.seconds)) {update($0)}
             .task(id: showHint) {if showHint {try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled {showHint = false}}}
     }
     private func captionText(_ unit: TranscriptReadingUnit) -> String {
@@ -98,7 +98,7 @@ struct VideoCaptionOverlay: View {
         if preferences.mode == "中文",unit.cues.allSatisfy({translations[$0.id] != nil}) {return chinese}
         return chinese.isEmpty ? english : english + "\n" + chinese
     }
-    private func rebuild() {index=ReadingIndex(store.transcript?.cues ?? [],grouped:preferences.grouped ?? true,video:true);timeline = TranscriptTimeline(store.transcript?.cues ?? []); update(playback.position)}
+    private func rebuild() {index=store.preparedReading?.index(grouped:preferences.grouped ?? true,video:true) ?? ReadingIndex();timeline = store.preparedReading?.timeline ?? TranscriptTimeline([]); update(playback.position)}
     private func update(_ seconds: Double) {let next = timeline.active(at: seconds, mapper: mapper); if next != activeIDs {activeIDs = next}}
     private func notifyIfNeeded() {
         guard preferences.enabled, preferences.mode != "英文", let t = store.transcript, t.translatedCount < t.cues.count else {showHint = false; return}

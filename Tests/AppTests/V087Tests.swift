@@ -36,6 +36,7 @@ import Testing
         let reopened=AppStore(root:s.repository!.root,preferences:d);defer{reopened.playback.close()}
         #expect(reopened.captions.value==value)
         #expect(reopened.captions.value.enabled==false)
+        for _ in 0..<100 {if !s.lessonLoading && !reopened.lessonLoading {break};try await Task.sleep(for:.milliseconds(20))}
         #expect(try reopened.repository!.read(reopened.lecture!)==s.transcript)
         s.captions.update{$0.enabled=true};s.captions.flush()
         let saved=GlobalCaptionPreferences(defaults:d);saved.initialize(legacy:VideoCaptionPreferences())
@@ -85,6 +86,7 @@ import Testing
         let first=s.library.lectures[0].id,second=s.library.lectures[1].id
         var lesson=s.library.lectures[0];var camera=lesson.mediaSources[0];camera.id=UUID();camera.role = .camera;camera.relativeOffset=1
         lesson.mediaSources=[lesson.mediaSources[0],camera];lesson.state.position=10.5;lesson.state.speed=1
+        try await wait(s.playback) // initial open is asynchronous
         s.playback.load(lesson,autoplay:true);try await wait(s.playback)
         let deadline=Date().addingTimeInterval(8);var sawShortEnd=false
         while !s.playback.naturallyEnded && Date()<deadline {

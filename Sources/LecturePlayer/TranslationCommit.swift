@@ -46,7 +46,7 @@ actor TranslationWriter {
         catch {blockedRecovery[url]=key;throw error}
     }
     private func performSaveFiles(lesson:Lecture,url:URL,onlyIfNeeded:Bool) throws -> TranslationCommit {
-        TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}
+        // Export work never owns the transcript transaction lock.
         let originalBytes=try Data(contentsOf:url)
         var t=try Codec.decode(Transcript.self,originalBytes);try t.validate()
         let before=t,started=Date(),timings=pendingTimings[url] ?? [:]
@@ -88,15 +88,35 @@ actor TranslationWriter {
         // Only requests committed in this process receive timings, once. Recovery never edits history.
         for i in (t.attempts ?? []).indices where timings[t.attempts![i].id] != nil {t.attempts![i].sidecarSeconds=Date().timeIntervalSince(started)}
         if t != before {
+            TranscriptTransactions.lock.lock(); defer {TranscriptTransactions.lock.unlock()}
+            let latestBytes=try Data(contentsOf:url)
+            var latest=try Codec.decode(Transcript.self,latestBytes);try latest.validate()
+            guard latest.version==t.version else {throw Failure("字幕版本已改变，文件状态未覆盖新版本")}
+            // A UI edit may have committed while the sidecars were rendering. Merge
+            // file bookkeeping only, and only for the exact exported content.
+            for id in (t.variants ?? [:]).keys {
+                if try SidecarWriter.inputKey(latest.viewing(id),lesson:lesson,hideSpeakers:hidden) == SidecarWriter.inputKey(before.viewing(id),lesson:lesson,hideSpeakers:hidden) {
+                    latest.variants?[id]?.sidecars=t.variants?[id]?.sidecars
+                    latest.variants?[id]?.fileStatus=t.variants?[id]?.fileStatus
+                    latest.variants?[id]?.fileInputKey=t.variants?[id]?.fileInputKey
+                } else {
+                    latest.variants?[id]?.fileStatus="译文已保存；等待生成文件"
+                }
+            }
+            for i in (latest.attempts ?? []).indices where timings[latest.attempts![i].id] != nil {
+                if let a=t.attempts?.first(where:{$0.id==latest.attempts![i].id}) {latest.attempts![i].sidecarSeconds=a.sidecarSeconds;latest.attempts![i].databaseSeconds=a.databaseSeconds}
+            }
+            t=latest.viewing(selected)
             let bytes=try Codec.encode(t)
-            if bytes != originalBytes {try writeTranscript(bytes,url);StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:bytes.count)}
+            if bytes != latestBytes {try writeTranscript(bytes,url);StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:bytes.count)}
         }
+        messages=(t.variants ?? [:]).keys.sorted().map {id in (t.variants?[id]?.title ?? id)+" · "+(t.variants?[id]?.fileStatus ?? "")}
         pendingTimings[url]=nil
         return TranslationCommit(transcript:t,complete:true,saved:0,sidecars:lesson.sidecars,fileStatus:messages.joined(separator:"；"),fileOutcome:outcome)
     }
     func read(_ url:URL) throws -> Transcript {let t=try Codec.decode(Transcript.self,Data(contentsOf:url));try t.validate();return t}
     func commit(result:TranslationResult,batch:TranslationBatch,config:TranslationConfig,lesson:Lecture,url:URL,seconds:Double?,attemptID:UUID,allowSave:Bool,deferFiles:Bool=false,queueSeconds:Double?=nil) throws -> TranslationCommit {
-        TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}
+        TranscriptTransactions.lock.lock();var locked=true;defer{if locked{TranscriptTransactions.lock.unlock()}}
         var t=try Codec.decode(Transcript.self,Data(contentsOf:url));try t.validate();try t.migrateVariants();t=t.viewing(config.providerID.rawValue);t.ensureVariant(t.variantID)
         guard t.version==batch.sourceVersion else {throw Failure("原字幕版本发生变化")}
         let key=try batch.key(config)
@@ -126,6 +146,7 @@ actor TranslationWriter {
         StorageDiagnostics.record(root:url.deletingLastPathComponent().deletingLastPathComponent(),operation:.transcript,outcome:.written,bytes:payload.count)
         let duration=Date().timeIntervalSince(dbStart)
         pendingTimings[url,default:[:]][attemptID]=duration;PerformanceTrace.record("translation.commit",duration)
+        TranscriptTransactions.lock.unlock();locked=false
         var saved=TranslationCommit(transcript:t,complete:complete,saved:a.saved,sidecars:nil,fileStatus:"译文已保存；等待生成文件")
         if allowSave && t.translatedCount>0 {
             if deferFiles {enqueueFiles(lesson,url:url)}

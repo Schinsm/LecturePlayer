@@ -133,7 +133,7 @@ struct AnalysisPanel: View {
         .onAppear {rebuildLookup(); expandCurrentOnce()}
         .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce()}}
         .onChange(of:chapterQuery){_,_ in refreshSearch()}
-        .onReceive(playback.$position) {value in if visible {updateCurrent(value)}}
+        .onReceive(playback.clock.$snapshot.map(\.seconds)) {value in if visible {updateCurrent(value)}}
         .onChange(of:lesson?.state.offset) {_,_ in updateCurrent(playback.position)}
         .sheet(isPresented: $confirming) {
             if let id = lesson?.id { AnalysisConfirmation(store: store, job: job, translation: translation, lessonID: id) }

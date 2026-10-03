@@ -44,9 +44,9 @@ struct PlaybackHeader: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.breadcrumb).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Text(store.lecture?.displayTitle ?? "").font(.headline).lineLimit(1)
+                if store.lessonLoading { Text("正在载入课件…").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
-            LayoutMenu(store: store, playback: store.playback)
             Menu {
                 Button("本课文件…") { files=true }
                 Button("添加或更换英文字幕…") {store.replaceSubtitle()}.disabled(store.translation.busy)
@@ -82,11 +82,14 @@ struct VideoPane: View {
                 .overlay(alignment: .bottom) { VideoCaptionOverlay(store: store, playback: playback, presentation:store.captions) }
             if let error = playback.error {
                 Text(error).foregroundStyle(.red)
-                Button("重新定位文件") { store.relocate() }
+                if playback.missing.isEmpty {
+                    Button(playback.ready ? "恢复播放" : "重试载入") {
+                        if playback.ready { playback.toggle() } else if let lesson=store.lecture {playback.retryLoad(lesson)}
+                    }
+                } else { Button("重新定位文件") { store.relocate() } }
             }
             PlaylistEndAction(store:store,playback:playback,presentation:store.playlist)
-            Slider(value: Binding(get: { playback.position }, set: { playback.seek($0) }), in: 0...max(1, playback.duration))
-                .disabled(!playback.ready).accessibilityLabel("播放位置")
+            PlaybackPositionSlider(playback:playback, clock:playback.clock)
             ViewThatFits(in: .horizontal) {
                 controlRow(compact: false)
                 controlRow(compact: true)
@@ -98,8 +101,7 @@ struct VideoPane: View {
         }.padding(.horizontal, 12)
     }
     private var timeDisplay: some View {
-        Text("\(timeLabel(playback.position)) / \(timeLabel(playback.duration))")
-            .font(.caption.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.65)
+        PlaybackTimeLabel(clock:playback.clock,duration:playback.duration)
     }
     private var transportControls: some View {
         HStack(spacing: 20) {
@@ -135,6 +137,7 @@ struct VideoPane: View {
                     Slider(value: Binding(get: { playback.volume }, set: { playback.setVolume($0) }), in: 0...1)
                         .frame(width: 120).accessibilityLabel("音量")
                 }
+                LayoutMenu(store:store,playback:playback)
                 StudyFullscreenButton()
         }.fixedSize(horizontal: true, vertical: false)
     }
@@ -236,12 +239,12 @@ struct ReaderPane: View {
                 guard visible,let request, cues.contains(where: { $0.id == request.cueID }) else { return }
                 reader.browse(); scrollID = unitID(request.cueID)
             }
-            .onChange(of: store.transcript?.version) { _, _ in rebuild() }
+            .onChange(of: store.preparedReading?.revision) { _, _ in rebuild() }
             .onChange(of: store.transcript?.translations) { _, _ in if visible {updateSearch()} }
             .onChange(of: store.lecture?.readingGrouped) {_,_ in rebuild(); if reader.following,let id = anchorID {scrollID = unitID(id)}}
             .onChange(of: hideSpeakers) {_,_ in updateSearch()}
             .onChange(of: offset) { _, _ in updateActive(playback.position); if visible,reader.following {scrollRequest += 1} }
-            .onReceive(playback.$position) { if visible {updateActive($0)} }
+            .onReceive(playback.clock.$snapshot.map(\.seconds)) { if visible {updateActive($0)} }
             .onChange(of:visible){_,value in if value {updateActive(playback.position);updateSearch();focusRequestedSearch()}}
     }
 
@@ -275,7 +278,10 @@ struct ReaderPane: View {
         store.updateLecture(id) { $0.state.subtitleOffsetSeconds = value }
         updateActive(playback.position); if visible,reader.following {scrollRequest += 1}
     }
-    private func rebuild() { index=ReadingIndex(cues,grouped:store.lecture?.readingGrouped ?? true); timeline = TranscriptTimeline(cues); updateActive(playback.position); updateSearch() }
+    private func rebuild() {
+        guard let data=store.preparedReading else { index=ReadingIndex(); timeline=TranscriptTimeline([]); updateSearch(); return }
+        index=data.index(grouped:store.lecture?.readingGrouped ?? true); timeline=data.timeline; updateActive(playback.position); updateSearch()
+    }
     private func updateActive(_ position: Double) {
         let next = timeline.active(at: position, mapper: mapper)
         if next != activeIDs { activeIDs = next }
@@ -373,3 +379,17 @@ struct ReadingUnitCell: View, Equatable {
     }
 }
 
+
+private struct PlaybackTimeLabel: View {
+    @ObservedObject var clock: PlaybackClock
+    let duration: Double
+    var body: some View { Text("\(timeLabel(clock.snapshot.seconds)) / \(timeLabel(duration))").font(.caption.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.65) }
+}
+private struct PlaybackPositionSlider: View {
+    @ObservedObject var playback: Playback
+    @ObservedObject var clock: PlaybackClock
+    var body: some View {
+        Slider(value: Binding(get: {clock.snapshot.seconds}, set: {playback.seek($0)}),in:0...max(1,playback.duration))
+            .disabled(!playback.ready).accessibilityLabel("播放位置")
+    }
+}

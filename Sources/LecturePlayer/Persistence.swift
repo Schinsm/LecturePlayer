@@ -78,7 +78,7 @@ import Core
         return root.appendingPathComponent("transcripts/\(lectureID)-\(version).json")
     }
     func read(_ lecture: Lecture, variantID:String? = nil) throws -> Transcript? {
-        TranscriptTransactions.lock.lock();defer{TranscriptTransactions.lock.unlock()}
+        // Atomic file replacement guarantees a complete revision without taking the export lock.
         guard let version = lecture.transcriptVersion else { return nil }
         let t = try Codec.decode(Transcript.self, Data(contentsOf: transcriptURL(lecture.id, version))); try t.validate(); return t.viewing(variantID ?? lecture.selectedTranslationVariantID)
     }
