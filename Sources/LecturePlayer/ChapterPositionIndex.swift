@@ -3,6 +3,13 @@ import Core
 
 struct ChapterPositionIndex {
     struct Entry {let id:String;let start:Double;let end:Double}
+    /// A reading location persists through silence; the active subtitle still uses cue ends.
+    static func readingAnchor(_ entries:[Entry],seconds:Double)->String? {
+        guard seconds.isFinite else{return nil}
+        var low=0,high=entries.count
+        while low<high {let middle=(low+high)/2;if entries[middle].start<=seconds{low=middle+1}else{high=middle}}
+        return low>0 ? entries[low-1].id:nil
+    }
     static func current(_ entries:[Entry],seconds:Double)->String? {
         var low=0,high=entries.count
         while low<high {let middle=(low+high)/2;if entries[middle].start<=seconds{low=middle+1}else{high=middle}}

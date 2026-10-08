@@ -10,6 +10,11 @@ import Core
     @Published var overviewExpanded=true
     @Published var expandedTopics=Set<String>()
     @Published var chapterQuery=""
+    @Published var chapterDirectoryExpanded=false
+    @Published var chapterFollowing=true
+    @Published var chapterScrollID:String?
+    func browseChapters(){if chapterFollowing {chapterFollowing=false}}
+    func followChapters(){chapterQuery="";chapterFollowing=true}
     @Published var openedDocument:Date?
     let content=ReadingContentCache()
 }

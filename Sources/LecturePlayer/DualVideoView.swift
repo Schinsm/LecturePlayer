@@ -55,6 +55,7 @@ struct VideoCanvas: NSViewRepresentable {
             super.init(frame: frame); wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor
             for i in videos.indices {
                 let v = videos[i]
+                v.presentationChanged = { [weak self] in self?.scheduleFrameSample() }
                 addSubview(v)
                 let message = messages[i]
                 message.alignment = .center; message.textColor = .white; message.backgroundColor = .black
@@ -93,7 +94,9 @@ struct VideoCanvas: NSViewRepresentable {
                 baseMessages[i] = playback.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
                     playback.ended.contains(source.id) ? "该视角已结束" : playback.isBeforeStart(source) ? "该视角尚未开始" : ""
             }
-            needsLayout = true; scheduleFrameSample()
+            // NSViewRepresentable can update after AppKit has finished its layout
+            // pass. Apply child geometry now, including the initial zero-size pass.
+            applyVideoFrames();needsLayout = true; scheduleFrameSample()
         }
         private func sourceLabel(_ index: Int) -> String { index < sources.count ? sources[index].role.rawValue : "视频" }
         private func bindFirstFrame(index: Int, source: MediaSource, playback: Playback) {
@@ -117,6 +120,10 @@ struct VideoCanvas: NSViewRepresentable {
         }
         private func sampleFirstFrames() {
             guard let playback else { stopFrameTimer(); return }
+            for i in sources.indices where i < videos.count {
+                videos[i].synchronizeAttachment()
+                bindFirstFrame(index:i,source:sources[i],playback:playback)
+            }
             let now = ProcessInfo.processInfo.systemUptime
             var watch = false
             for i in videos.indices {
@@ -224,11 +231,15 @@ struct VideoCanvas: NSViewRepresentable {
                 for event in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didDeminiaturizeNotification, NSWindow.didBecomeKeyNotification] {
                     windowObservers.append(NotificationCenter.default.addObserver(forName: event, object: window, queue: .main) { [weak self] _ in self?.scheduleFrameSample() })
                 }
-                scheduleFrameSample()
+                applyVideoFrames();scheduleFrameSample()
             } else { stopFrameTimer() }
         }
-        override func layout() {
-            super.layout(); guard !sources.isEmpty else { videos.forEach { $0.isHidden = true }; messages.forEach { $0.isHidden = true }; recoveryButtons.forEach { $0.isHidden = true }; handle.isHidden = true; stopFrameTimer(); return }
+        override func setFrameSize(_ newSize:NSSize) {
+            super.setFrameSize(newSize);applyVideoFrames()
+        }
+        override func layout() {super.layout();applyVideoFrames()}
+        private func applyVideoFrames() {
+            guard !sources.isEmpty else { videos.forEach { $0.isHidden = true }; messages.forEach { $0.isHidden = true }; recoveryButtons.forEach { $0.isHidden = true }; handle.isHidden = true; stopFrameTimer(); return }
             let screen = sources.firstIndex { $0.role == .screen } ?? 0
             let camera = sources.firstIndex { $0.role == .camera } ?? 0
             let secondary = swapped ? screen : camera

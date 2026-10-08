@@ -45,40 +45,70 @@ struct AnalysisPanel: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("搜索主题、知识点或英文术语", text: $session.chapterQuery)
-                .textFieldStyle(.roundedBorder).accessibilityLabel("搜索课程章节")
-            ViewThatFits(in:.horizontal) {
-                chapterToolbar(expandedControls:true)
-                chapterToolbar(expandedControls:false)
+            HStack(spacing:8) {
+                Text("章节").font(.headline)
+                if !session.chapterFollowing {
+                    Button("跟随"){session.followChapters();locateRequest += 1}
+                        .disabled(currentChapterID == nil || stale).help("跟随当前章节")
+                }
+                Spacer()
+                Button(session.chapterDirectoryExpanded ? "收起目录":"完整目录") {
+                    session.chapterDirectoryExpanded.toggle()
+                    if session.chapterDirectoryExpanded && session.chapterFollowing {locateRequest += 1}
+                }.accessibilityLabel(session.chapterDirectoryExpanded ? "收起完整目录":"展开完整目录")
+                if !session.chapterDirectoryExpanded { chapterActions }
+            }.controlSize(.small)
+            if session.chapterDirectoryExpanded {
+                TextField("搜索章节", text: $session.chapterQuery)
+                    .textFieldStyle(.roundedBorder).accessibilityLabel("搜索课程章节")
+                ViewThatFits(in:.horizontal) {
+                    chapterToolbar(expandedControls:true)
+                    chapterToolbar(expandedControls:false)
+                }
             }
             if let id = lesson?.id, let error = job.loadErrors[id] {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 Button("重新读取") { Task { await job.load(store: store, lessonID: id) } }
             }
             if unavailable {
-                ContentUnavailableView("需要带时间的英文字幕", systemImage: "text.bubble", description: Text("添加 VTT 或 SRT 后，可生成总结与章节。无时间戳 TXT 无法定位讲解片段。"))
+                Text("添加带时间的字幕后可生成章节").font(.callout).foregroundStyle(.secondary)
                 Button("添加英文字幕…") { store.replaceSubtitle() }
             } else {
                 if thisRunning {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(job.status(for:lesson?.id)).font(.caption) }
-                } else if let pending {
-                    Text(pending.pendingChunks.isEmpty ? "分块分析已保存，最后整理未完成。继续时只处理整理步骤。" : "已保存 \(pending.completedChunks.count)/\(pending.plan.chunks.count) 组分析 · 等待确认继续").font(.caption).foregroundStyle(.secondary)
-                    if let message = pending.message, !message.isEmpty {
-                        DisclosureGroup("技术详情") {
-                            Text(message).font(.caption).textSelection(.enabled)
-                            if let attempt=record?.attempts.last {
-                                Text("阶段：" + attempt.stage + " · 协议：" + (attempt.protocolVersion.map(String.init) ?? "未记录")).font(.caption)
-                                Text("类别：" + (attempt.validation?.code ?? "未记录") + " · 请求：" + (attempt.requestID ?? "未记录")).font(.caption).textSelection(.enabled)
-                                if let diagnostics=attempt.diagnostics {Text("服务状态：" + (diagnostics.status ?? "未知") + " · 输出上限：" + (diagnostics.outputLimit.map(String.init) ?? "未记录")).font(.caption)}
-                            }
-                        }
-                    }
+                } else if let pending,session.chapterDirectoryExpanded {
+                    pendingDetails(pending)
                 }
                 if stale {
                     Label("对应旧字幕，时间跳转已停用。可重新生成当前字幕的总结。", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if let document = record?.completed {
+                    documentContent(document)
+                } else if !thisRunning {
+                    Text("未生成总结").font(.callout).foregroundStyle(.secondary)
+                    Button(buttonTitle) {confirming=true}.buttonStyle(.borderedProminent)
+                        .frame(maxWidth:.infinity)
+                } else { Spacer() }
+            }
+        }.padding(12)
+        .task(id: "\(lesson?.id.uuidString ?? "")-\(version)") {
+            if let id = lesson?.id { await job.load(store: store, lessonID: id); refreshHistoricalSource(); rebuildLookup() }
+        }
+        .onChange(of: job.revision) { _, _ in refreshHistoricalSource(); rebuildLookup(); expandCurrentOnce() }
+        .onAppear {rebuildLookup(); expandCurrentOnce()}
+        .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce();followCurrentChapter()}}
+        .onChange(of:chapterQuery){_,value in if !value.isEmpty {session.browseChapters()};refreshSearch()}
+        .onChange(of:currentChapterID){_,_ in followCurrentChapter()}
+        .onChange(of:session.chapterDirectoryExpanded){_,expanded in if expanded {followCurrentChapter()}}
+        .onReceive(playback.clock.$snapshot.map(\.seconds)) {value in if visible {updateCurrent(value)}}
+        .onChange(of:lesson?.state.offset) {_,_ in updateCurrent(playback.position)}
+        .sheet(isPresented: $confirming) {
+            if let id = lesson?.id { AnalysisConfirmation(store: store, job: job, translation: translation, lessonID: id) }
+        }
+    }
+    @ViewBuilder private func documentContent(_ document:AnalysisDocument)->some View {
+                    if session.chapterDirectoryExpanded {
                     ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
@@ -113,51 +143,85 @@ struct AnalysisPanel: View {
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
                             }
-                        }.padding(.trailing, 8)
-                    }.onChange(of:locateRequest) {_,_ in
-                        guard let chapter=currentChapterID,!stale else{return}
-                        session.chapterQuery=""
+                        }.padding(.trailing, 8).scrollTargetLayout()
+                    }.scrollPosition(id:$session.chapterScrollID)
+                    .background(ScrollIntent(enabled:visible,onManual:{session.browseChapters()}))
+                    .onChange(of:locateRequest) {_,request in
+                        guard visible,session.chapterFollowing,let chapter=currentChapterID,!stale else{return}
                         if let topic=topicByChapter[chapter] {expandedTopics.insert(topic)}
                         Task { @MainActor in
                             await Task.yield()
+                            guard visible,session.chapterFollowing,session.chapterDirectoryExpanded,
+                                  request == locateRequest,chapter == currentChapterID else{return}
                             proxy.scrollTo("chapter:"+chapter,anchor:.center)
                         }
                     }
                     }
-                } else if !thisRunning {
-                    ContentUnavailableView("未生成总结", systemImage: "list.bullet.rectangle", description: Text("根据英文字幕整理这堂课的主题与知识点。"))
-                    Button(buttonTitle) {confirming=true}.buttonStyle(.borderedProminent)
-                        .frame(maxWidth:.infinity)
-                } else { Spacer() }
+                    } else { ScrollView { compactChapter(document).frame(maxWidth:.infinity,alignment:.leading) }.scrollIndicators(.hidden) }
+    }
+    private func pendingDetails(_ pending:AnalysisTaskState)->some View {
+        VStack(alignment:.leading,spacing:6) {
+                    Text(pending.pendingChunks.isEmpty ? "分块分析已保存，最后整理未完成。继续时只处理整理步骤。" : "已保存 \(pending.completedChunks.count)/\(pending.plan.chunks.count) 组分析 · 等待确认继续").font(.caption).foregroundStyle(.secondary)
+                    if let message = pending.message, !message.isEmpty {
+                        DisclosureGroup("技术详情") {
+                            Text(message).font(.caption).textSelection(.enabled)
+                            if let attempt=record?.attempts.last {
+                                Text("阶段：" + attempt.stage + " · 协议：" + (attempt.protocolVersion.map { String($0) } ?? "未记录")).font(.caption)
+                                Text("类别：" + (attempt.validation?.code ?? "未记录") + " · 请求：" + (attempt.requestID ?? "未记录")).font(.caption).textSelection(.enabled)
+                                if let diagnostics=attempt.diagnostics {Text("服务状态：" + (diagnostics.status ?? "未知") + " · 输出上限：" + (diagnostics.outputLimit.map { String($0) } ?? "未记录")).font(.caption)}
+                            }
+                        }
+                    }
+        }
+    }
+    private var chapterActions:some View {
+        Menu {
+            Button(buttonTitle){if thisRunning {job.pause()} else {confirming=true}}
+                .disabled(unavailable || (thisRunning ? job.pauseRequested : !translation.acceptsQueuedWork))
+            if record?.completed != nil {Button("导出总结与章节…"){store.exportAnalysis()}.disabled(stale)}
+        } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize().help("章节操作")
+    }
+    @ViewBuilder private func compactChapter(_ document:AnalysisDocument)->some View {
+        if let id=currentChapterID,let chapter=document.chapters.first(where:{$0.id==id}) {
+            VStack(alignment:.leading,spacing:6) {
+                if let topicID=topicByChapter[id],let topic=document.topics?.first(where:{$0.id==topicID}) {
+                    Text(topic.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Button {seek(chapter)} label: {
+                    HStack(alignment:.top) {
+                        RoundedRectangle(cornerRadius:2).fill(Color.accentColor).frame(width:3)
+                        VStack(alignment:.leading,spacing:4) {
+                            Text(chapter.title).font(.headline).lineLimit(2)
+                            Text(rangeLabel(chapter)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            if let point=chapter.points.first {Text(point).font(.callout).foregroundStyle(.secondary).lineLimit(2)}
+                        }.frame(maxWidth:.infinity,alignment:.leading)
+                    }.fixedSize(horizontal:false,vertical:true).contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(stale)
+                Button("查看对应原文"){onViewSource(chapter.startCueID)}.buttonStyle(.borderless).font(.caption)
             }
-        }.padding(12)
-        .task(id: "\(lesson?.id.uuidString ?? "")-\(version)") {
-            if let id = lesson?.id { await job.load(store: store, lessonID: id); refreshHistoricalSource(); rebuildLookup() }
+        } else {
+            Text(stale ? "章节对应旧字幕":"尚未进入章节").font(.callout).foregroundStyle(.secondary)
+            Spacer(minLength:0)
         }
-        .onChange(of: job.revision) { _, _ in refreshHistoricalSource(); rebuildLookup(); expandCurrentOnce() }
-        .onAppear {rebuildLookup(); expandCurrentOnce()}
-        .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce()}}
-        .onChange(of:chapterQuery){_,_ in refreshSearch()}
-        .onReceive(playback.clock.$snapshot.map(\.seconds)) {value in if visible {updateCurrent(value)}}
-        .onChange(of:lesson?.state.offset) {_,_ in updateCurrent(playback.position)}
-        .sheet(isPresented: $confirming) {
-            if let id = lesson?.id { AnalysisConfirmation(store: store, job: job, translation: translation, lessonID: id) }
-        }
+    }
+    private func followCurrentChapter() {
+        guard visible,session.chapterFollowing,session.chapterDirectoryExpanded,chapterQuery.isEmpty,!stale,let id=currentChapterID else{return}
+        if let topic=topicByChapter[id] {expandedTopics.insert(topic)}
+        locateRequest += 1
     }
     private func chapterToolbar(expandedControls:Bool) -> some View {
         HStack(spacing:8) {
-            Text("课程章节").font(.headline).fixedSize()
-            Button("定位当前"){locateRequest += 1}
+            Button("定位当前"){session.followChapters();locateRequest += 1}
                 .disabled(currentChapterID==nil || stale).help("清除搜索并定位当前知识点，保留播放状态")
             Spacer(minLength:0)
             if expandedControls,record?.completed?.topics != nil {
-                Button("展开全部"){expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
-                Button("收起全部"){expandedTopics=[]}
+                Button("展开全部"){session.browseChapters();expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
+                Button("收起全部"){session.browseChapters();expandedTopics=[]}
             }
             Menu {
                 if !expandedControls,record?.completed?.topics != nil {
-                    Button("展开全部"){expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
-                    Button("收起全部"){expandedTopics=[]}
+                    Button("展开全部"){session.browseChapters();expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
+                    Button("收起全部"){session.browseChapters();expandedTopics=[]}
                     Divider()
                 }
                 Button(buttonTitle) {if thisRunning {job.pause()} else {confirming=true}}
@@ -173,14 +237,14 @@ struct AnalysisPanel: View {
         chapterQuery.isEmpty || (topic.title + " " + topic.overview).localizedCaseInsensitiveContains(chapterQuery) || topic.subtopics.contains(where:chapterMatches)
     }
     private func expandCurrentOnce() {
-        guard visible,let record,let date=record.completedAt,date != openedDocument,let topics=record.completed?.topics else {return}
+        guard visible,session.chapterFollowing,let record,let date=record.completedAt,date != openedDocument,let topics=record.completed?.topics else {return}
         openedDocument=date;expandedTopics=[]
         if let topic=topics.first(where:{$0.subtopics.contains(where:isCurrent)}) {expandedTopics.insert(topic.id)}
     }
     private func topicRow(_ topic: AnalysisTopic) -> some View {
         VStack(alignment:.leading,spacing:8) {
             HStack(alignment:.top) {
-                Button {if !expandedTopics.insert(topic.id).inserted {expandedTopics.remove(topic.id)}} label: {
+                Button {session.browseChapters();if !expandedTopics.insert(topic.id).inserted {expandedTopics.remove(topic.id)}} label: {
                     Image(systemName:expandedTopics.contains(topic.id) ? "chevron.down" : "chevron.right").frame(width:24,height:28)
                 }.buttonStyle(.plain).accessibilityLabel("展开或收起" + topic.title)
                 Button {if let first=topic.subtopics.first {seek(first)}} label: {
@@ -248,7 +312,7 @@ struct AnalysisPanel: View {
     }
     private func refreshSearch(){filteredTopics=record?.completed?.topics?.filter(topicMatches) ?? [];filteredChapters=record?.completed?.chapters.filter(chapterMatches) ?? []}
     private func updateCurrent(_ seconds:Double) {
-        let next=stale ? nil : ChapterPositionIndex.current(intervals,seconds:seconds-(lesson?.state.offset ?? 0))
+        let next=stale ? nil : ChapterPositionIndex.readingAnchor(intervals,seconds:seconds-(lesson?.state.offset ?? 0))
         if next != currentChapterID {currentChapterID=next}
     }
     private func seek(_ chapter: AnalysisChapter) {

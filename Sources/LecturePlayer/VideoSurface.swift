@@ -10,6 +10,7 @@ import AVFoundation
     private var itemObservation: NSKeyValueObservation?
     private weak var attachedItem: AVPlayerItem?
     private var enabled = true
+    var presentationChanged:(()->Void)?
     private(set) var attachmentCount = 0
     private(set) var rebuildCount = 0
     @objc dynamic private(set) var isReadyForDisplay = false
@@ -18,13 +19,16 @@ import AVFoundation
             guard player !== oldValue else { synchronizeAttachment(); return }
             itemObservation = nil
             itemObservation = player?.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
-                DispatchQueue.main.async { [weak self] in self?.synchronizeAttachment() }
+                DispatchQueue.main.async { [weak self] in self?.synchronizeAttachment(); self?.presentationChanged?() }
             }
             synchronizeAttachment()
         }
     }
     override init(frame: NSRect) {
         super.init(frame: frame)
+        // Explicit layer hosting: AppKit must not recreate a backing layer and
+        // strand our AVPlayerLayer during SwiftUI mounting/reparenting.
+        layer = CALayer()
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.masksToBounds = true
@@ -55,6 +59,11 @@ import AVFoundation
         synchronizeAttachment()
     }
     func synchronizeAttachment() {
+        if let root=layer,playerLayer.superlayer !== root {
+            playerLayer.removeFromSuperlayer();root.addSublayer(playerLayer)
+            PerformanceTrace.record("video.layerReattached",1)
+        }
+        layoutVideoLayer()
         let mounted = enabled && window != nil && !isHiddenOrHasHiddenAncestor
             && bounds.width > 1 && bounds.height > 1
         let target = mounted ? player : nil
@@ -93,8 +102,11 @@ import AVFoundation
         super.setFrameSize(newSize); layoutVideoLayer(); synchronizeAttachment()
     }
     override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow(); layoutVideoLayer(); synchronizeAttachment()
+        super.viewDidMoveToWindow(); layoutVideoLayer(); synchronizeAttachment();presentationChanged?()
     }
-    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); layoutVideoLayer() }
+    override func viewDidHide() {super.viewDidHide();synchronizeAttachment()}
+    override func viewDidUnhide() {super.viewDidUnhide();synchronizeAttachment();presentationChanged?()}
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); synchronizeAttachment() }
+    override func viewDidMoveToSuperview() {super.viewDidMoveToSuperview();synchronizeAttachment();presentationChanged?()}
     deinit { playerLayer.player = nil }
 }

@@ -162,7 +162,10 @@ struct ImportView: View {
     @LPState private var analysisPreviews:[ImportAnalysisPreview]=[]
     @LPState private var previews:[ImportTranslationPreview]=[]
     @LPState private var previewError=""
-    @LPState private var hasKey=false
+    @AppStorage("translationService") private var selectedService = "openAI"
+    @Environment(\.openSettings) private var openSettings
+    private var provider:TranslationService {TranslationService(rawValue:selectedService) ?? .openAI}
+    private var hasKey:Bool {keyAvailability.state(provider).isAvailable}
     @LPState private var managed = false; @LPState private var importing = false
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -200,20 +203,36 @@ struct ImportView: View {
                 }
             }
             Toggle("导入成功后翻译全部未译内容（使用所选服务）",isOn:$autoTranslate).disabled(!hasKey || previews.isEmpty || store.translation.busy)
-            Toggle("导入成功后生成总结与章节",isOn:$autoAnalyze).disabled(!keyAvailability.configured(.openAI) || analysisPreviews.isEmpty || store.translation.busy)
+            Toggle("导入成功后生成总结与章节",isOn:$autoAnalyze).disabled(!keyAvailability.state(.openAI).isAvailable || analysisPreviews.isEmpty || store.translation.busy)
             if autoAnalyze {Text(analysisPreviews.map(\.summary).joined(separator:"\n")).font(.caption)}
-            if !keyAvailability.configured(.openAI) {Text("总结需要在设置中保存 OpenAI Key；仍可正常导入。").font(.caption)}
+            if !keyAvailability.state(.openAI).isAvailable { credentialStatus(.openAI, purpose:provider == .openAI ? "翻译与总结":"总结") }
             if store.translation.busy {Text("已有翻译任务正在运行；本次仍可正常导入，之后再开始翻译。").font(.caption)}
-            if !hasKey {Text("未设置或无法访问 Key；可以仅导入，在设置中保存 Key 后手动翻译。").font(.caption)}
+            if !hasKey && provider != .openAI { credentialStatus(provider,purpose:"翻译") }
             if previews.isEmpty {Text("没有可自动翻译的新课件字幕；关联原课件不会触发翻译。").font(.caption)}
             if autoTranslate {Text(previews.map(\.summary).joined(separator:"\n")).font(.caption);Text("确认后按导入顺序翻译；异常暂停整个队列，不自动补译。").font(.caption)}
             if !previewError.isEmpty {Text(previewError).font(.caption).foregroundStyle(.orange)}
             Text(message).foregroundStyle(.red)
             TransferStatus(transfer: store.transfer)
             HStack { Button("关闭") { dismiss() }.disabled(importing); Spacer(); Button(autoTranslate || autoAnalyze ? "确认导入并开始所选处理" : "确认 \(rows.count) 项关联与导入") { importAll() }.disabled(rows.isEmpty || importing) }
-        }.padding(24).frame(width: 800, height: 620).onAppear {hasKey=keyAvailability.configured(TranslationPreferences.load(.standard).providerID);addFiles(initialURLs.isEmpty ? store.directoryFiles : initialURLs)}
-        .task(id:rows.map { $0.id.uuidString + ($0.subtitle?.path ?? "") }.joined()) {refreshTranslationPreview()}
+        }.padding(24).frame(width: 800, height: 620).onAppear {refreshCredentials();addFiles(initialURLs.isEmpty ? store.directoryFiles : initialURLs)}
+        .task(id:selectedService + rows.map { $0.id.uuidString + ($0.subtitle?.path ?? "") }.joined()) {refreshTranslationPreview()}
+        .onChange(of:selectedService) {_,_ in refreshCredentials()}
+        .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) {_ in refreshCredentials()}
         .interactiveDismissDisabled(importing)
+    }
+    private func refreshCredentials() {
+        keyAvailability.refresh(provider)
+        if provider != .openAI {keyAvailability.refresh(.openAI)}
+    }
+    @ViewBuilder private func credentialStatus(_ service:TranslationService,purpose:String)->some View {
+        let status=keyAvailability.state(service)
+        HStack {
+            if status == .checking {ProgressView().controlSize(.small)}
+            Text(service.title + " · " + purpose + "：" + status.message).font(.caption)
+            if status == .authorizationRequired {Button("授权读取"){keyAvailability.authorize(service)}}
+            else if status == .missing {Button("打开设置"){openSettings()}}
+            else if status != .checking {Button("重新检查"){keyAvailability.invalidate(service)}}
+        }
     }
     func addFiles(_ urls: [URL]) {
         do { files = Array(Set(files + (try ImportPlanner.scan(urls))))
@@ -258,8 +277,8 @@ struct ImportView: View {
                 previews.append(ImportTranslationPreview(rowID:row.id,transcript:t,config:config,summary:"\(row.title)：\(t.cues.count) 条 · \(batches.count) 次 · \(config.providerID.title) · \(config.displayModel) · \(cost)"))
             }catch{previewError="部分字幕无法预览翻译："+error.localizedDescription}
         }
-        if analysisPreviews.isEmpty || !keyAvailability.configured(.openAI) || store.translation.busy {autoAnalyze=false}
-        if previews.isEmpty || !hasKey || store.translation.busy {autoTranslate=false}
+        if analysisPreviews.isEmpty {autoAnalyze=false}
+        if previews.isEmpty {autoTranslate=false}
     }
     func importAll() {
         importing=true;message=""
@@ -268,6 +287,16 @@ struct ImportView: View {
         Task { @MainActor in
             defer{importing=false}
             do {
+                if !confirmed.isEmpty {
+                    guard confirmed.allSatisfy({$0.config.providerID == provider}) else {throw Failure("服务已改变，请重新确认。")}
+                    let status=await keyAvailability.validate(provider)
+                    guard status.isAvailable else {throw Failure(provider.title + "：" + status.message)}
+                }
+                if !confirmedAnalysis.isEmpty {
+                    let status=await keyAvailability.validate(.openAI)
+                    guard status.isAvailable else {throw Failure("OpenAI：" + status.message)}
+                }
+                guard confirmed.allSatisfy({$0.config.providerID == provider}) else {throw Failure("服务已改变，请重新确认。")}
                 for row in rows {
                     if let id=row.existingID,let sourceID=row.relinkSourceID {try await store.relinkMedia(id,sourceID:sourceID,url:row.video)}
                     else if let id=row.existingID {try await store.attachSecond(id,url:row.video)}

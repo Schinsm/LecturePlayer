@@ -124,9 +124,10 @@ private final class SpeedOptionRow: NSButton {
         }
         let color=NSColor.labelColor
         if current {
-            color.setStroke()
-            let mark=NSBezierPath();mark.lineWidth=1.6;mark.lineCapStyle = .round;mark.lineJoinStyle = .round
-            mark.move(to:NSPoint(x:8,y:bounds.midY));mark.line(to:NSPoint(x:11,y:bounds.midY-3));mark.line(to:NSPoint(x:17,y:bounds.midY+4));mark.stroke()
+            let symbol=NSImage(systemSymbolName:"checkmark",accessibilityDescription:"当前倍速")?
+                .withSymbolConfiguration(.init(pointSize:11,weight:.semibold))
+            symbol?.draw(in:NSRect(x:7,y:bounds.midY-6,width:12,height:12),from:.zero,
+                         operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
         }
         let text=title as NSString, font=NSFont.systemFont(ofSize:13)
         let size=text.size(withAttributes:[.font:font])

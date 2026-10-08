@@ -4,20 +4,20 @@
 
 A native macOS lecture player with synchronized dual video, bilingual captions, searchable transcripts, and chapters.
 
-**[下载 0.8.9.1](https://github.com/Schinsm/LecturePlayer/releases/tag/v0.8.9.1)** · [全部版本](https://github.com/Schinsm/LecturePlayer/releases)
+**[下载 0.8.10](https://github.com/Schinsm/LecturePlayer/releases/tag/v0.8.10)** · [全部版本](https://github.com/Schinsm/LecturePlayer/releases)
 
 ## 功能
 
 - 双视频同步播放，可切换布局、拖动和缩放画中画。
 - 中英字幕、按句阅读、全文搜索和时间校准。
-- 分级章节、当前知识点定位、翻译与总结。
+- 章节与实时转写同屏显示，分别跟随播放；支持完整目录、当前知识点定位、翻译与总结。
 - 课程播放列表，以及跨视频记忆的字幕设置。
 
 ## 安装
 
 需要 **Apple Silicon Mac、macOS 14 或更新版本**。
 
-下载 `LecturePlayer-0.8.9.1-macOS-arm64.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
+下载 `LecturePlayer-0.8.10-macOS-arm64.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
 
 应用尚未完成 Apple 公证。首次打开如被系统拦截，可在“系统设置 → 隐私与安全性”中允许打开。同名 `.sha256` 文件用于核对下载完整性。
 

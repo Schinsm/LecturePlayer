@@ -23,7 +23,6 @@ struct PlayerPage: View {
         guard let command=shortcuts.resolve(code,modifiers) else{return false}
         if command == .search,let id=store.current {
             readerVisible = true
-            store.readerPresentation.select("transcript",lesson:id)
             store.readerPresentation.session(id).searchRequest += 1
             return true
         }
@@ -231,7 +230,7 @@ struct ReaderPane: View {
                     if reader.following && !reduceMotion {withAnimation(.easeOut(duration:0.18)){proxy.scrollTo(id,anchor:UnitPoint(x:0.5,y:0.35))}}
                     else {proxy.scrollTo(id,anchor:UnitPoint(x:0.5,y:0.35))}
                 }}
-                    .onChange(of:sourceRequest) {_,request in if visible,let request {proxy.scrollTo(unitID(request.cueID),anchor:.center)}}.background(ScrollIntent(enabled:visible,onManual: { reader.browse() }))
+                    .onChange(of:sourceRequest) {_,request in if visible,let request {reader.browse();proxy.scrollTo(unitID(request.cueID),anchor:.center)}}.background(ScrollIntent(enabled:visible,onManual: { reader.browse() }))
                     .onChange(of: anchorID) { _, id in if visible, reader.following, let id { scrollID = unitID(id) } }
                     .onChange(of: scrollRequest) { _, _ in if visible,let id = anchorID { scrollID = unitID(id); proxy.scrollTo(unitID(id),anchor:.center) } }
                     .task {

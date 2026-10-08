@@ -5,12 +5,17 @@ import Core
 
 struct Keychain {
     static var isConfigured:Bool { configured(.openAI) }
-    static func configured(_ provider:TranslationService)->Bool {
-        if provider == .apple {if #available(macOS 15.0,*) {return true};return false}
-        let service = keyService(provider)
-        let context=LAContext();context.interactionNotAllowed=true
-        let q:[String:Any]=[kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:service,kSecAttrAccount as String:"api-key",kSecReturnAttributes as String:true,kSecUseAuthenticationContext as String:context]
-        return SecItemCopyMatching(q as CFDictionary,nil)==errSecSuccess
+    static func configured(_ provider:TranslationService)->Bool { availability(provider).isAvailable }
+    static func availability(_ provider:TranslationService, allowInteraction:Bool = false)->CredentialAvailability {
+        if provider == .apple {if #available(macOS 15.0,*) {return .available};return .unavailable(errSecUnimplemented)}
+        let context=LAContext();context.interactionNotAllowed = !allowInteraction
+        let q:[String:Any]=[kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:keyService(provider),kSecAttrAccount as String:"api-key",kSecReturnData as String:true,kSecMatchLimit as String:kSecMatchLimitOne,kSecUseAuthenticationContext as String:context]
+        // Reading attributes alone does not establish permission to read the credential.
+        var result:CFTypeRef?
+        let status=SecItemCopyMatching(q as CFDictionary,&result)
+        guard status==errSecSuccess else{return .keychainStatus(status)}
+        guard let data=result as? Data,let key=String(data:data,encoding:.utf8),!key.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{return .missing}
+        return .available
     }
     static let service="local.LecturePlayer.openai"
     static func keyService(_ provider:TranslationService)->String {provider == .openAI ? service : "local.LecturePlayer."+provider.rawValue}
@@ -289,7 +294,7 @@ struct APISettings: View {
             HStack {
                 Button("保存 Key"){do{try Keychain.save(key.trimmingCharacters(in:.whitespacesAndNewlines),provider:provider);key="";keyRevision=UUID();status=""}catch{status=error.localizedDescription}}.disabled(key.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 Button("删除 Key"){do{try Keychain.remove(provider);keyRevision=UUID();status=""}catch{status=error.localizedDescription}}
-                Text(keyAvailability.values[provider] == nil ? "正在检查…" : keyAvailability.configured(provider) ? "已配置" : "未配置").foregroundStyle(.secondary)
+                Text(keyAvailability.state(provider).message).foregroundStyle(.secondary)
             }
             }
             if !status.isEmpty {Text(status).font(.caption)}

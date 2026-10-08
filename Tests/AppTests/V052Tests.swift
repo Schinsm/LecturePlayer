@@ -47,7 +47,11 @@ private actor QueueMock:TranslationProvider {
     @Test func queueSequentialCancelAndNoNextLesson() async throws {
         let (store,t)=try fixture();try stage(store,t);let provider=QueueMock("wait")
         let task=Task{await store.translation.executeQueue(store:store,ids:store.library.lectures.map(\.id),provider:provider)}
-        try await Task.sleep(nanoseconds:80_000_000);task.cancel();await task.value
+        defer{task.cancel()}
+        // Cancel an in-flight request, rather than racing task startup on a busy host.
+        for _ in 0..<500 {if await !provider.calls.isEmpty {break};try await Task.sleep(for:.milliseconds(10))}
+        try #require(await provider.calls.count==1)
+        task.cancel();await task.value
         #expect(await provider.calls.count==1)
         #expect(store.translation.states.values.allSatisfy{$0.state=="已暂停"})
         let saved=try #require(try store.repository?.read(store.library.lectures[0]))
