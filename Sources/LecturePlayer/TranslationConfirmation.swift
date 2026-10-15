@@ -48,7 +48,7 @@ struct TranslationConfirmation: View {
                 LabeledContent("模型",value:config.displayModel)
                 LabeledContent("本次",value:"\(batches.flatMap(\.targets).count) 条 · \(batches.count) 次请求")
                 Text((try? config.estimate(batches)) ?? "无法估算，请检查模型设置。").font(.caption).foregroundStyle(.secondary)
-                Text(config.parallelism==2 ? "已开启加速：最多两个请求同时处理。暂停后等待已发送请求保存；它们仍可能计费。" : "逐组保存，异常即暂停；不会自动重发或更换服务。").font(.caption)
+                Text(config.parallelism(requested:job.requestConcurrency) > 1 ? "最多 \(config.parallelism(requested:job.requestConcurrency)) 个请求同时处理，逐组保存。限流或连接中断会自动重试最多 3 次；其他异常即暂停，不会更换服务。" : "逐组保存。限流或连接中断会自动重试最多 3 次；其他异常即暂停，不会更换服务。").font(.caption)
                 if config.providerID == .azure {Text("Azure 标准翻译不使用 OpenAI 的提示词和课程术语表。专业术语建议先试译检查。").font(.caption)}
                 Divider()
                 Text(message).foregroundStyle(.red).font(.caption)

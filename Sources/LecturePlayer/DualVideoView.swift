@@ -324,7 +324,7 @@ struct LayoutMenu: View {
             ForEach(playback.views) { source in
                 Button((playback.audioID == source.id ? "✓ " : "") + source.role.rawValue + "音频") { playback.selectAudio(source.id); if let id = store.current { store.updateLecture(id) { $0.audioSourceID = source.id } } }.disabled(!playback.hasAudio(source.id))
             }
-        } label: { Image(systemName: "rectangle.split.2x1") }.menuStyle(.borderlessButton).frame(width: 28).help("画面布局与音频").accessibilityLabel("画面布局与音频")
+        } label: { GlassIcon(systemName: "rectangle.split.2x1") }.glassMenuStyle().help("画面布局与音频").accessibilityLabel("画面布局与音频")
     }
 }
 

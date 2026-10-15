@@ -146,15 +146,30 @@ import Core
                         catch {return Completed(chunk:chunk,response:nil,lease:nil,seconds:0)}
                         do {try await self.currentVersion(store,lessonID,sourceVersion)}
                         catch {await store.requests.pause();await store.requests.release(lease);return Completed(chunk:chunk,response:nil,lease:nil,seconds:0,notSent:error.localizedDescription)}
-                        let start=Date();let response:AnalysisResponse<[AnalysisChapter]>
-                        do {try Task.checkCancellation();response=try await provider.analyze(chunk,config:config)}
-                        catch let error as AnalysisNotSent {await store.requests.pause();await store.requests.release(lease);return Completed(chunk:chunk,response:nil,lease:nil,seconds:0,notSent:error.localizedDescription)}
-                        catch {response=AnalysisResponse(value:nil,result:await self.failureResult(error))}
+                        let start=Date();var response=AnalysisResponse<[AnalysisChapter]>(value:nil,result:TranslationResult(items:[]))
+                        // Same resend rule as translation: rate limits, 5xx and failed connections only.
+                        for attempt in 0...RetryPolicy.maxRetries {
+                            do {
+                                try Task.checkCancellation();response=try await provider.analyze(chunk,config:config)
+                                if response.value==nil,let delay=RetryPolicy.delay(status:response.result.diagnostics?.httpStatus,attempt:attempt),!Task.isCancelled {
+                                    PerformanceTrace.record("analysis.retry",delay);try? await Task.sleep(for:.seconds(delay));continue
+                                }
+                                break
+                            }
+                            catch let error as AnalysisNotSent {await store.requests.pause();await store.requests.release(lease);return Completed(chunk:chunk,response:nil,lease:nil,seconds:0,notSent:error.localizedDescription)}
+                            catch {
+                                if let delay=RetryPolicy.delay(for:error,attempt:attempt),!Task.isCancelled {PerformanceTrace.record("analysis.retry",delay);try? await Task.sleep(for:.seconds(delay));continue}
+                                response=AnalysisResponse(value:nil,result:await self.failureResult(error));break
+                            }
+                        }
                         return Completed(chunk:chunk,response:response,lease:lease,seconds:Date().timeIntervalSince(start))
                     }
                 }
-                dispatch();dispatch()
+                // Slow start as in translation: one chunk first, then up to three at a time.
+                dispatch()
+                var warmedUp=false
                 while let done=await group.next() {
+                    var released=false
                     guard let response=done.response else {if let error=done.notSent {failed=true;progress.message=error;onPause?()} else {pauseRequested=true};continue}
                     do {
                         var attempt=try AnalysisAttempt(stage:done.chunk.id,config:config,result:response.result,requestSeconds:done.seconds,outcome:"completed")
@@ -165,6 +180,11 @@ import Core
                             guard response.result.problem==nil,let chapters=response.value else {throw Failure(response.result.problem ?? "服务未返回完整章节")}
                             try AnalysisValidation.block(chapters,chunk:done.chunk)
                             progress.completedChunks[done.chunk.id]=chapters
+                            // Validated: start the next chunks before this one is written to disk.
+                            if !pauseRequested,let lease=done.lease {
+                                await store.requests.release(lease);released=true
+                                dispatch();if !warmedUp {warmedUp=true;dispatch();dispatch()}
+                            }
                         } catch {
                             failed=true;attempt.outcome=Task.isCancelled ? "cancelled":"failed";attempt.message=error.localizedDescription
                             attempt.validation=attempt.validation ?? (error as? AnalysisValidationFailure)?.detail ?? AnalysisValidationDetail(code:"validation")
@@ -178,8 +198,7 @@ import Core
                         status="已保存 \(progress.completedChunks.count)/\(progress.plan.chunks.count) 组分析"
                     } catch {failed=true;progress.message=error.localizedDescription;onPause?();await store.requests.pause()}
                     if pauseRequested || Task.isCancelled {await store.requests.pause()}
-                    if let lease=done.lease {await store.requests.release(lease)}
-                    dispatch()
+                    if !released {if let lease=done.lease {await store.requests.release(lease)};dispatch()}
                 }
             }
             if failed {

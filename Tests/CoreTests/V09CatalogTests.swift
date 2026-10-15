@@ -76,6 +76,18 @@ struct V09CatalogTests {
         #expect(LessonCatalog.displayTitle(custom) == custom.displayTitle, "metadata the user set wins")
     }
 
+    @Test func shortTitlesAndCaptureOffsets() {
+        #expect(LessonCatalog.shortTitle(lesson("FNCE90018_2026_SM2 W-s1-full", "C/Week10")) == "课堂录像")
+        #expect(LessonCatalog.shortTitle(lesson("ACCT90002_2026_SM2 T-s1-full", "C/Week9/Seminar")) == "Seminar 录像")
+        #expect(LessonCatalog.shortTitle(lesson("L9 Online", "C/Week10")) == "L9 Online")
+        #expect(LessonCatalog.defaultSubtitleOffset(title: "FNCE90018_2026_SM2 W-s1-full") == 14)
+        #expect(LessonCatalog.defaultSubtitleOffset(title: "Lecture 9.1") == 0)
+        var adjusted = lesson("FNCE90018_2026_SM2 W-s1-full", "C/Week10"); adjusted.state.subtitleOffsetSeconds = 12.5
+        #expect(!LessonCatalog.needsCaptureOffset(adjusted), "a value the user set is kept")
+        #expect(LessonCatalog.needsCaptureOffset(lesson("FNCE90018_2026_SM2 W-s1-full", "C/Week10")))
+        #expect(!LessonCatalog.needsCaptureOffset(lesson("Lecture 9.1", "C/Week9/Lecture")))
+    }
+
     @Test func sectionsAreNewestFirstWithUnknownWeekLast() {
         let sections = LessonCatalog.sections([
             lesson("Recording", "COURSE/Week8"), lesson("Loose", "COURSE/Misc"),
@@ -89,5 +101,21 @@ struct V09CatalogTests {
         var other = lesson("Lecture 9.2", "OTHER/Week9/Lecture"); other.courseID = UUID()
         let groups = LessonCatalog.groups([lesson("Lecture 9.1", "COURSE/Week9/Lecture"), other])
         #expect(groups.allSatisfy { !$0.isSeries })
+    }
+}
+
+/// 0.9.1 resend rule: only answers that cost nothing are retried, at most three times.
+struct V091RetryPolicyTests {
+    @Test func onlyRateLimitsServerErrorsAndLostConnectionsAreResent() {
+        #expect(RetryPolicy.delay(status: 429, retryAfter: 7, attempt: 0) == 7)
+        #expect(RetryPolicy.delay(status: 503, attempt: 0) == 2)
+        #expect(RetryPolicy.delay(status: 502, attempt: 2) == 8)
+        #expect(RetryPolicy.delay(status: 429, attempt: 3) == nil, "three resends at most")
+        #expect(RetryPolicy.delay(status: 401, attempt: 0) == nil)
+        #expect(RetryPolicy.delay(status: 400, attempt: 0) == nil)
+        #expect(RetryPolicy.delay(status: nil, urlError: .networkConnectionLost, attempt: 0) == 2)
+        #expect(RetryPolicy.delay(status: nil, urlError: .timedOut, attempt: 0) == nil, "a timed-out request may have been billed")
+        #expect(RetryPolicy.delay(for: APIError(status: 429, retryable: false), attempt: 0) == nil, "exhausted quota")
+        #expect(RetryPolicy.delay(status: 429, retryAfter: 600, attempt: 0) == 60, "waits are capped")
     }
 }

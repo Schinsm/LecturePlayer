@@ -53,7 +53,7 @@ struct DirectorySidebar:View {
     @Environment(\.openSettings) private var openSettings
     var body:some View {
         List {
-            Button{navigation.showWeekHome()}label:{Label("按周",systemImage:"calendar").frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())}
+            Button{navigation.showWeekHome()}label:{Label("主页",systemImage:"house").frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())}
                 .buttonStyle(.plain).listRowBackground(navigation.weekHome ? Color.accentColor.opacity(0.16):Color.clear)
             Section("课程") {
             ForEach(navigation.index.courses) {course in

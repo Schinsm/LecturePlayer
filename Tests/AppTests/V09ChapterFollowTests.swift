@@ -104,5 +104,67 @@ import Core
         store.playback.pause()
         try await expectFollows("after playing")
     }
+
+    /// While playback crosses neighbouring chapters, the highlighted row should settle at the same height each time
+    /// and not overshoot on the way. Rows here vary in height, like real chapters with 1–4 points.
+    @Test(.enabled(if:ProcessInfo.processInfo.environment["LP_RENDER_WINDOW"] == "1"))
+    func highlightedChapterStaysAtAStableHeightDuringPlayback() async throws {
+        _=NSApplication.shared
+        let (root,fixtureLibrary,_)=try PersistenceTests().fixture()
+        defer {try? FileManager.default.removeItem(at:root)}
+        var vtt="WEBVTT\n\n"
+        for i in 0..<160 { let start=Double(i)*0.075; vtt+="c\(i)\n\(stamp(start)) --> \(stamp(start+0.07))\nLine \(i)\n\n" }
+        let transcript=try SubtitleParser.parse(Data(vtt.utf8),format:"vtt")
+        var library=fixtureLibrary;library.lastLecture=nil
+        var lesson=library.lectures[0]
+        lesson.transcriptVersion=transcript.version;lesson.state.position=0.2;lesson.state.speed=1;lesson.duration=12
+        library.lectures=[lesson]
+        let repository=try Repository(root:root)
+        try repository.write(transcript,for:lesson.id);try repository.save(library)
+        let cues=transcript.cues
+        var chapters:[AnalysisChapter]=[],topics:[AnalysisTopic]=[]
+        for t in 0..<8 {
+            var children:[AnalysisChapter]=[]
+            for c in 0..<4 {
+                let n=t*4+c
+                var chapter=AnalysisChapter(id:"ch\(n)",startCueID:cues[n*5].id,endCueID:cues[n*5+4].id,title:"章节 \(n)",points:(0..<(1+n%2)).map {"要点 \(n)-\($0) "+String(repeating:"展开说明的文字。",count:1+(n*3)%9)})
+                chapter.memberCueIDs=cues[n*5...n*5+4].map(\.id)
+                children.append(chapter)
+            }
+            chapters+=children
+            topics.append(AnalysisTopic(id:"t\(t)",title:"主题 \(t)",overview:"概述 \(t) "+String(repeating:"用于撑高目录的说明文字。",count:1+t%4),subtopics:children))
+        }
+        var document=AnalysisDocument(chapters:chapters,overview:[AnalysisOverviewPoint(text:"总结",chapterID:chapters[0].id)]);document.topics=topics
+        var record=LessonAnalysis(lessonID:lesson.id,sourceVersion:transcript.version)
+        record.completed=document;record.completedConfig=AnalysisConfig(model:"gpt-4o-mini");record.completedAt=Date()
+        try await AnalysisRepository(root:root).save(record)
+        let store=AppStore(root:root)
+        store.readingColumns.show(.chapters);store.readingColumns.show(.transcript)
+        let window=NSWindow(contentRect:CGRect(x:0,y:0,width:1300,height:780),styleMask:[.titled,.resizable],backing:.buffered,defer:false)
+        window.isReleasedWhenClosed=false
+        let host=NSHostingView(rootView:FollowHarness(store:store));window.contentView=host
+        window.orderFrontRegardless()
+        defer {store.back();window.orderOut(nil);window.close()}
+        store.open(lesson.id)
+        try await V04PlaybackTests().wait(store.playback)
+        // Start mid-list so rows above have been estimated, then play through ~8 chapters.
+        store.playback.seek(4.0);try await Task.sleep(for:.milliseconds(600))
+        store.playback.toggle()
+        var samples:[(String,Double)]=[]
+        for _ in 0..<64 {
+            host.layoutSubtreeIfNeeded()
+            if let (id,frame)=ChapterRowProbe.current {samples.append((id,Double(frame.minY)))}
+            try await Task.sleep(for:.milliseconds(50))
+        }
+        store.playback.pause()
+        // Settled position per chapter: the last sample before the highlight moved on.
+        var settled:[(String,Double)]=[]
+        for (i,s) in samples.enumerated() where i+1==samples.count || samples[i+1].0 != s.0 {settled.append(s)}
+        let tops=settled.dropFirst().dropLast().map(\.1)
+        let spread=(tops.max() ?? 0)-(tops.min() ?? 0)
+        print("STABILITY settled",settled.map{"\($0.0)@\(Int($0.1))"}.joined(separator:" "),"spread",Int(spread))
+        #expect(tops.count>=4,"playback should cross several chapters, got \(settled.map(\.0))")
+        #expect(spread<12,"highlighted row should settle at one height, spread \(Int(spread)) pt")
+    }
 }
 #endif

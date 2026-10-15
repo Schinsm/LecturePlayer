@@ -21,6 +21,15 @@ struct AnalysisPanel: View {
     @LPState private var currentChapterID: String?
     @LPState private var topicByChapter:[String:String]=[:]
     @LPState private var locateRequest=0
+    @LPState private var heights=RowHeightCache()
+    @LPState private var viewportHeight:CGFloat=600
+    @LPState private var lastLocated:Int?
+    /// Puts the row's top at a fixed quarter of the column, whatever the row's height:
+    /// a scroll anchor y aligns y·rowHeight with y·viewport, so y = top / (viewport − rowHeight).
+    private func anchor(_ chapter:String)->UnitPoint {
+        let row=heights.values[chapter] ?? 160, viewport=max(viewportHeight,row+1)
+        return UnitPoint(x:0.5,y:max(0,min(1,viewport*0.25/(viewport-row))))
+    }
     private var currentTopicID:String? {currentChapterID.flatMap{topicByChapter[$0]}}
     @LPState private var filteredTopics:[AnalysisTopic]=[]
     @LPState private var filteredChapters:[AnalysisChapter]=[]
@@ -77,7 +86,7 @@ struct AnalysisPanel: View {
         }
         .onChange(of: job.revision) { _, _ in refreshHistoricalSource(); rebuildLookup(); expandCurrentOnce() }
         .onAppear {rebuildLookup(); expandCurrentOnce()}
-        .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce();followCurrentChapter()}}
+        .onChange(of:visible) {_,value in if value {lastLocated=nil;refreshSearch();updateCurrent(playback.position);expandCurrentOnce();followCurrentChapter()}}
         .onChange(of:chapterQuery){_,value in if !value.isEmpty {session.browseChapters()};refreshSearch()}
         .onChange(of:currentChapterID){_,_ in followCurrentChapter()}
         .onChange(of:session.chapterFollowing){_,following in if following {followCurrentChapter()}}
@@ -102,19 +111,29 @@ struct AnalysisPanel: View {
                     if !chapterQuery.isEmpty && filteredTopics.isEmpty && filteredChapters.isEmpty {Text("无结果").foregroundStyle(.secondary)}
                 }.padding(.trailing,8).scrollTargetLayout()
             }.scrollPosition(id:$session.chapterScrollID)
+            .onGeometryChange(for:CGFloat.self) {$0.size.height} action: {viewportHeight=$0}
             .background(ScrollIntent(enabled:visible,onManual:{session.browseChapters()}))
             .onChange(of:locateRequest) {_,request in
                 guard visible,session.chapterFollowing,let chapter=currentChapterID,!stale else{return}
-                if let topic=topicByChapter[chapter] {expandedTopics.insert(topic)}
+                let expanded=topicByChapter[chapter].map {expandedTopics.insert($0).inserted} ?? false
+                let target=listRows(document).firstIndex {$0.id=="chapter:"+chapter}
+                // Playback moves to a neighbouring row, which is already built: one scroll, no correction pass.
+                // (An animated scrollTo is dropped by the lazy list when the row is just below the fold.)
+                let near = !expanded && target != nil && lastLocated.map {abs($0-target!) <= 6} == true
+                lastLocated=target
                 Task { @MainActor in
                     await Task.yield()
                     guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
-                    // The first jump lands on estimated heights for rows not built yet; once they are
+                    if near {
+                        proxy.scrollTo("chapter:"+chapter,anchor:anchor(chapter))
+                        return
+                    }
+                    // A long jump lands on estimated heights for rows not built yet; once they are
                     // built, the second pass corrects the position.
-                    proxy.scrollTo("chapter:"+chapter,anchor:UnitPoint(x:0.5,y:0.3))
+                    proxy.scrollTo("chapter:"+chapter,anchor:anchor(chapter))
                     try? await Task.sleep(for:.milliseconds(80))
                     guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
-                    proxy.scrollTo("chapter:"+chapter,anchor:UnitPoint(x:0.5,y:0.3))
+                    proxy.scrollTo("chapter:"+chapter,anchor:anchor(chapter))
                 }
             }
             .task {
@@ -217,6 +236,7 @@ struct AnalysisPanel: View {
             .accessibilityLabel("\(rangeLabel(chapter))，\(chapter.title)")
             .accessibilityValue(isCurrent(chapter) ? "当前知识点":"")
             .chapterRowProbe(chapter.id,current:isCurrent(chapter))
+            .onGeometryChange(for:CGFloat.self) {$0.size.height} action: {[heights] in heights.values[chapter.id]=$0}
     }
     private func cueRange(_ chapter: AnalysisChapter) -> (Cue, Cue)? {
         guard let first = cueLookup[chapter.startCueID],
@@ -414,6 +434,9 @@ private struct ChapterPlaybackBadge:View {
             .onReceive(playback.$playing.removeDuplicates()){playing=$0}
     }
 }
+
+/// Measured row heights for scroll anchoring. A reference type, so recording a height never re-renders the list.
+final class RowHeightCache {var values:[String:CGFloat]=[:]}
 
 private enum ChapterListRow:Identifiable {
     case topic(AnalysisTopic,first:Bool)

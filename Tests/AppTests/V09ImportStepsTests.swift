@@ -49,3 +49,29 @@ struct V09ImportStepsTests {
         #expect(columns.isOn(.chapters) && columns.isOn(.transcript))
     }
 }
+
+/// 0.9.1: Lecture Capture recordings still at 0 s get +14 s once; values the user set are kept.
+@MainActor struct V091CaptureOffsetTests {
+    @Test func migrationRunsOnceAndOnlyTouchesZeroCaptureRecordings() throws {
+        let (root,fixture,transcript)=try PersistenceTests().fixture()
+        defer {try? FileManager.default.removeItem(at:root)}
+        var library=fixture
+        var capture=library.lectures[0];capture.id=UUID();capture.title="FNCE90018_2026_SM2 W-s1-full";capture.identity="capture"
+        var tuned=capture;tuned.id=UUID();tuned.identity="tuned";tuned.state.subtitleOffsetSeconds=12.5
+        library.lectures[0].title="Lecture 9.1"
+        library.lectures+=[capture,tuned]
+        do {let repository=try Repository(root:root);for lesson in library.lectures {try repository.write(transcript,for:lesson.id)};try repository.save(library)}
+        let store=AppStore(root:root)
+        #expect(store.error==nil)
+        func offset(_ id:UUID,_ s:AppStore)->Double {s.library.lectures.first{$0.id==id}!.state.subtitleOffsetSeconds}
+        #expect(offset(capture.id,store)==14)
+        #expect(offset(tuned.id,store)==12.5)
+        #expect(offset(library.lectures[0].id,store)==0)
+        #expect(store.library.appliedMigrations?.contains("capture-offset-14")==true)
+        #expect(try FileManager.default.contentsOfDirectory(atPath:root.path).contains{$0.hasPrefix("before-v091-offset-")})
+        // A later deliberate 0 is not overwritten on the next launch.
+        store.updateLecture(capture.id){$0.state.subtitleOffsetSeconds=0};store.flushMetadata()
+        let reopened=AppStore(root:root)
+        #expect(offset(capture.id,reopened)==0)
+    }
+}

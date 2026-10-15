@@ -153,6 +153,7 @@ private struct PlaybackPreferenceSections: View {
             preferenceSlider("字号", value: $font, range: 12...32, display: "\(Int(font))")
             preferenceSlider("行距", value: $spacing, range: 0...16, display: "\(Int(spacing))")
             Toggle("隐藏说话人编号", isOn: $hideSpeakers)
+            Text("Lecture Capture 录像默认字幕延后 14 秒（片头版权声明），可在字幕同步校准中修改。").font(.caption).foregroundStyle(.secondary)
         }
         GlobalCaptionSettings(store: store)
     }

@@ -51,42 +51,44 @@ private actor ConcurrentMock:TranslationProvider {
     @Test func pauseDrainsOnlyInflightAndManualResumeKeepsScope() async throws {
         let (s,_)=try fixture(),m=ConcurrentMock(delay:150_000_000);let ids=s.library.lectures.map(\.id)
         let task=Task{await s.translation.executeQueue(store:s,ids:ids,provider:m)}
-        for _ in 0..<100 {if await m.calls.count==2{break};try await Task.sleep(nanoseconds:5_000_000)}
+        // Slow start (0.9.1): one request is in flight until the first answer comes back.
+        for _ in 0..<100 {if await m.calls.count==1{break};try await Task.sleep(nanoseconds:5_000_000)}
         s.translation.pause();await task.value
-        #expect(await m.calls.count==2)
-        #expect(try s.repository?.read(s.library.lectures[0])?.translatedCount==20)
+        #expect(await m.calls.count==1)
+        #expect(try s.repository?.read(s.library.lectures[0])?.translatedCount==10)
         #expect(try s.repository?.read(s.library.lectures[1])?.translatedCount==0)
         let reopened=AppStore(root:s.repository!.root),resume=ConcurrentMock()
         #expect(!reopened.translation.running)
         await reopened.translation.executeQueue(store:reopened,ids:[ids[0]],provider:resume)
-        #expect(await resume.calls.flatMap{$0}.count==5)
+        #expect(await resume.calls.flatMap{$0}.count==15)
         #expect(try reopened.repository?.read(reopened.library.lectures[0])?.translatedCount==25)
     }
     @Test func bothFailuresRetainAllFailedIDsAndUsage() async throws {
         let (s,_)=try fixture(),m=ConcurrentMock(fail:true),l=s.library.lectures[0]
         await s.translation.executeQueue(store:s,ids:s.library.lectures.map(\.id),provider:m)
         let t=try #require(try s.repository?.read(l))
-        #expect(await m.calls.count==2)
-        #expect(t.task?.failedIDs.count==20 && t.usage?.count==2 && t.translatedCount==0)
+        // The first answer fails, so no further paid request is sent.
+        #expect(await m.calls.count==1)
+        #expect(t.task?.failedIDs.count==10 && t.usage?.count==1 && t.translatedCount==0)
         #expect(t.task?.state=="已暂停")
     }
     @Test func cancellationRecordsUnknownAndStopsQueue() async throws {
         let (s,_)=try fixture(),m=ConcurrentMock(delay:1_000_000_000)
         let task=Task{await s.translation.executeQueue(store:s,ids:s.library.lectures.map(\.id),provider:m)}
-        for _ in 0..<100 {if await m.calls.count==2{break};try await Task.sleep(nanoseconds:5_000_000)}
+        for _ in 0..<100 {if await m.calls.count==1{break};try await Task.sleep(nanoseconds:5_000_000)}
         task.cancel();await task.value
         let t=try #require(try s.repository?.read(s.library.lectures[0]))
-        #expect(await m.calls.count==2 && t.translatedCount==0)
-        #expect(t.usage?.count==2 && t.usage!.allSatisfy{$0.inputTokens==nil})
+        #expect(await m.calls.count==1 && t.translatedCount==0)
+        #expect(t.usage?.count==1 && t.usage!.allSatisfy{$0.inputTokens==nil})
     }
     @Test func versionChangesDuringRequestNeverWriteIntoNewVersion() async throws {
         let (s,_)=try fixture(),m=ConcurrentMock(delay:100_000_000),l=s.library.lectures[0]
         let task=Task{await s.translation.executeQueue(store:s,ids:[l.id],provider:m)}
-        for _ in 0..<100 {if await m.calls.count==2{break};try await Task.sleep(nanoseconds:5_000_000)}
+        for _ in 0..<100 {if await m.calls.count==1{break};try await Task.sleep(nanoseconds:5_000_000)}
         s.updateLecture(l.id){$0.transcriptVersion=String(repeating:"0",count:64)}
         await task.value
         let old=try #require(try s.repository?.read(l))
-        #expect(old.translatedCount==0 && old.usage?.count==2)
+        #expect(old.translatedCount==0 && old.usage?.count==1)
         #expect(s.library.lectures[0].transcriptVersion != l.transcriptVersion)
     }
     @Test func azureTaskIgnoresOpenAIParallelSwitch() async throws {

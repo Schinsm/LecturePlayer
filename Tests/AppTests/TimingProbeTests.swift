@@ -60,7 +60,9 @@ import Core
         #expect(reopened.lectures.first { $0.id == second.id }?.state.subtitleOffsetSeconds == -1.5)
         #expect(reopened.lectures[0].state.position == 7); #expect(reopened.lectures[0].state.speed == 1.5)
         let store = AppStore(root: root); let backup = try store.snapshot()
-        let copy = try Codec.decode(Backup.self, Codec.encode(backup)); #expect(copy.library == reopened)
+        // Opening the store records one-off migrations (0.9.1); everything else must round-trip unchanged.
+        var expected = reopened; expected.appliedMigrations = store.library.appliedMigrations
+        let copy = try Codec.decode(Backup.self, Codec.encode(backup)); #expect(copy.library == expected)
         #expect(try repository.read(reopened.lectures[0])?.original == t.original)
         store.playback.close()
     }

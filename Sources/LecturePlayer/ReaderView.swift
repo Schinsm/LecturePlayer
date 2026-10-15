@@ -42,7 +42,7 @@ struct PlaybackHeader: View {
     @LPState private var details = false
     @LPState private var files = false
     var body: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 10) {
             Button { store.back() } label: { Image(systemName: "chevron.left") }.help("课程库").accessibilityLabel("课程库")
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.breadcrumb).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -53,7 +53,6 @@ struct PlaybackHeader: View {
             if let id=store.current {ReadingSearchField(session:store.readerPresentation.session(id),columns:store.readingColumns)}
             ReadingSwitches(columns:store.readingColumns)
             LayoutMenu(store:store,playback:store.playback,columns:store.readingColumns)
-                .padding(.horizontal,6).frame(height:30).glassSurface(Capsule(),interactive:true)
             Menu {
                 Button("本课文件…") { files=true }
                 Button("添加或更换英文字幕…") {store.replaceSubtitle()}.disabled(store.translation.busy)
@@ -72,7 +71,7 @@ struct PlaybackHeader: View {
                 ForEach(store.lecture?.marks ?? []) { mark in
                     Button("\(timeLabel(mark.seconds)) · \(mark.note)") { store.playback.seek(mark.seconds) }
                 }
-            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 30, height: 30).glassSurface(Circle(),interactive:true).help("本课文件、导出与书签").accessibilityLabel("本课文件、导出与书签")
+            } label: { GlassIcon(systemName: "ellipsis") }.glassMenuStyle().help("本课文件、导出与书签").accessibilityLabel("本课文件、导出与书签")
         }.buttonStyle(.borderless).padding(.horizontal,12).padding(.vertical,10).sheet(isPresented:$files){DataLocations(store:store,lessonID:store.current)}.sheet(isPresented: $details) { if let id = store.current { LessonDetails(store: store, ids: [id]) } }
     }
 }
@@ -112,7 +111,7 @@ struct ReadingSearchField: View {
                         .buttonStyle(.plain).help("清除搜索").accessibilityLabel("清除搜索")
                 }
             }
-            .padding(.horizontal,10).frame(height:30).glassSurface(Capsule())
+            .padding(.horizontal,12).frame(height:32).glassSurface(Capsule())
             .onChange(of:session.searchRequest) {_,_ in focused=true}
         }
     }
@@ -132,7 +131,7 @@ struct ReadingSwitches: View {
     private func item(_ title:String,icon:String,pane:ReadingColumns.Pane)->some View {
         let on=columns.isOn(pane)
         return Button {columns.toggle(pane)} label: {
-            Label(title,systemImage:icon).font(.callout.weight(on ? .semibold:.regular)).padding(.horizontal,10).frame(height:24)
+            Label(title,systemImage:icon).font(.callout.weight(on ? .semibold:.regular)).padding(.horizontal,10).frame(height:26)
                 .background {if on {Capsule().fill(Color.primary.opacity(0.14))}}.contentShape(Capsule())
         }.buttonStyle(.plain).foregroundStyle(on ? .primary:.secondary)
         .help(on ? "收起"+title:"显示"+title).accessibilityLabel(title).accessibilityValue(on ? "显示":"已收起")

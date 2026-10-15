@@ -59,7 +59,7 @@ import UniformTypeIdentifiers
     let pipPreferences: PictureInPicturePreferences
     let captionPreferences:GlobalCaptionPreferences
     let playlist=CoursePlaylistPresentation()
-    let requests=RequestScheduler()
+    let requests=RequestScheduler(limit:4)
     let processing = ImportProcessingCoordinator()
     let analysis = AnalysisJob(); let transfer = MediaTransfer(); let translation = TranslationJob(); let playback:Playback; var repository: Repository?
     var lecture: Lecture? { library.lectures.first { $0.id == current } }
@@ -82,7 +82,7 @@ import UniformTypeIdentifiers
             let root = explicitRoot ?? ProcessInfo.processInfo.environment["LECTURE_PLAYER_DATA"].map { URL(fileURLWithPath: $0) } ?? (Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDataRoot") as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LecturePlayer")
             watchesEnabled = explicitRoot == nil && Bundle.main.object(forInfoDictionaryKey: "LecturePlayerDisableAutomaticMaintenance") as? Bool != true
             fingerprints=MediaFingerprintCache(storage:root.appendingPathComponent("Cache/media-fingerprints.json"))
-            repository = try Repository(root: root); repository?.onWriteFailure = {[weak self] in self?.storageFailed($0)}; library = try repository!.load(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
+            repository = try Repository(root: root); repository?.onWriteFailure = {[weak self] in self?.storageFailed($0)}; library = try repository!.load(); migrateCaptureOffsets(); refreshDirectoryPresentation(); selectedCourse = library.courses.filter { $0.directoryPath != nil }.sorted { $0.order < $1.order }.first?.id
             if watchesEnabled {
                 refreshPolicy=RefreshPolicy(rawValue:UserDefaults.standard.string(forKey:"directoryRefreshPolicy") ?? "automatic") ?? .automatic
                 lastDirectoryAttempt=UserDefaults.standard.object(forKey:refreshPreferenceKey) as? Date
@@ -180,6 +180,23 @@ import UniformTypeIdentifiers
     }
     func back() { lessonLoadTask?.cancel(); lessonLoadID=UUID(); lessonLoading=false; readingColumns.flush(); pipPreferences.flush(); readerPresentation.flush(); captions.flush(); playback.close(); current = nil; transcript = nil; preparedReading=nil }
     func saveTranscript(_ value: Transcript, lectureID: UUID) throws { try repository?.write(value, for: lectureID); displayTranscript(value,for:lectureID); saveVisibleTranslations(lectureID) }
+    /// Lecture Capture recordings imported before 0.9.1 start at 0 s; give those still at 0 the usual +14 s once.
+    func migrateCaptureOffsets() {
+        let key = "capture-offset-14"
+        guard library.appliedMigrations?.contains(key) != true, let repository else { return }
+        var next = library
+        next.appliedMigrations = (next.appliedMigrations ?? []) + [key]
+        let targets = next.lectures.indices.filter { LessonCatalog.needsCaptureOffset(next.lectures[$0]) }
+        // Without a recovery snapshot, leave the library alone and try again next launch.
+        if !targets.isEmpty {
+            do { try repository.writeRecoverySnapshot(library, to: repository.root.appendingPathComponent("before-v091-offset-\(UUID()).json")) }
+            catch { PerformanceTrace.record("migration.captureOffsetSnapshotFailed", 1); return }
+        }
+        do {
+            for i in targets { next.lectures[i].state.subtitleOffsetSeconds = LessonCatalog.captureSubtitleOffset }
+            try repository.save(next); library = next
+        } catch { storageFailed(error) }
+    }
     func addCourse(_ name: String) { let course = Course(name: name, order: library.courses.count); library.courses.append(course); selectedCourse = course.id; selectedFolder = nil; persist() }
     func addFolder(_ name: String) { guard let course = selectedCourse else { return }; library.folders.append(Folder(name: name, courseID: course, parentID: selectedFolder)); persist() }
     func importPair(video: URL, subtitle: URL?, title: String) throws {
@@ -189,6 +206,7 @@ import UniformTypeIdentifiers
         guard !library.lectures.contains(where: { $0.identity == identity }) else { throw Failure("此视频已经导入；请使用已有回放或重新定位") }
         let bookmark = try video.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
         var lecture = Lecture(title: title, courseID: courseID, folderID: selectedFolder, url: video, bookmark: bookmark, identity: identity)
+        lecture.state.subtitleOffsetSeconds = LessonCatalog.defaultSubtitleOffset(title: title)
         lecture.state.speed = UserDefaults.standard.double(forKey: "defaultSpeed") == 0 ? 1 : UserDefaults.standard.double(forKey: "defaultSpeed")
         if let subtitle { try ImportPlanner.requireLocal(subtitle); let t = try SubtitleParser.parse(Data(contentsOf: subtitle), format: subtitle.pathExtension); try repository?.write(t, for: lecture.id); lecture.transcriptVersion = t.version; lecture.subtitlePath = subtitle.path }
         var next = library; next.lectures.append(lecture); try repository?.save(next); library = next

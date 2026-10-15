@@ -40,3 +40,23 @@ public actor RequestScheduler {
         }
     }
 }
+
+/// Which failures may be resent automatically. Only those where the service did no billable work:
+/// rate limits and server-side 5xx answers, or a connection that failed before any response.
+/// Timeouts are not retried: the request may have been processed and billed.
+public enum RetryPolicy {
+    public static let maxRetries = 3
+    public static let transientStatuses: Set<Int> = [429, 500, 502, 503, 504]
+    public static func delay(status: Int?, retryAfter: Double? = nil, urlError: URLError.Code? = nil, attempt: Int) -> Double? {
+        guard attempt < maxRetries else { return nil }
+        let backoff = 2 * pow(2, Double(attempt))
+        if let status, transientStatuses.contains(status) { return min(60, max(0.5, retryAfter ?? backoff)) }
+        let offline: Set<URLError.Code> = [.notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed]
+        if let urlError, offline.contains(urlError) { return backoff }
+        return nil
+    }
+    public static func delay(for error: Error, attempt: Int) -> Double? {
+        if let api = error as? APIError { return api.retryable ? delay(status: api.status, retryAfter: api.retryAfter, attempt: attempt) : nil }
+        return delay(status: nil, urlError: (error as? URLError)?.code, attempt: attempt)
+    }
+}

@@ -67,6 +67,7 @@ extension AppStore {
         var lesson = Lecture(title: row.title, courseID: courseID, folderID: selectedFolder, url: row.video, bookmark: nil, identity: media[0].identity)
         lesson.subtitlePath = row.subtitle?.path; lesson.week = row.week; lesson.sessionType = row.sessionType; lesson.topic = row.topic; lesson.customTitle = row.customTitle
         lesson.state.speed = UserDefaults.standard.double(forKey: "defaultSpeed") == 0 ? 1 : UserDefaults.standard.double(forKey: "defaultSpeed")
+        lesson.state.subtitleOffsetSeconds = LessonCatalog.defaultSubtitleOffset(title: row.video.deletingPathExtension().lastPathComponent)
         let transcript = try row.subtitle.map { try SubtitleParser.parse(Data(contentsOf: $0), format: $0.pathExtension) }
         var createdDirectory: URL?
         do {

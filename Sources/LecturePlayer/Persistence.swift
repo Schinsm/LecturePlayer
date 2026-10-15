@@ -30,6 +30,7 @@ import Core
             else if row.key == "directoryRoot" { library.directoryRoot = try Codec.decode(String?.self, row.payload) }
             else if row.key == "directoryBookmark" { library.directoryBookmark = try Codec.decode(Data?.self, row.payload) }
             else if row.key == "last" { library.lastLecture = try Codec.decode(UUID?.self, row.payload) }
+            else if row.key == "migrations" { library.appliedMigrations = try Codec.decode([String]?.self, row.payload) }
             else if row.key.hasPrefix("c-") { library.courses.append(try Codec.decode(Course.self, row.payload)) }
             else if row.key.hasPrefix("f-") { library.folders.append(try Codec.decode(Folder.self, row.payload)) }
             else if row.key.hasPrefix("l-") { library.lectures.append(try Codec.decode(Lecture.self, row.payload)) }
@@ -70,6 +71,7 @@ import Core
         try library.validate()
         var expected: [String: Data] = ["schema": try Codec.encode(library.schema), "last": try Codec.encode(library.lastLecture)]
         expected["directoryRoot"] = try Codec.encode(library.directoryRoot); expected["directoryBookmark"] = try Codec.encode(library.directoryBookmark)
+        if let migrations = library.appliedMigrations { expected["migrations"] = try Codec.encode(migrations) }
         for c in library.courses { expected["c-\(c.id)"] = try Codec.encode(c) }
         for f in library.folders { expected["f-\(f.id)"] = try Codec.encode(f) }
         for l in library.lectures { expected["l-\(l.id)"] = try Codec.encode(l) }

@@ -78,7 +78,6 @@ struct WeekHome: View {
                     ContentUnavailableView("还没有课件", systemImage: "calendar", description: Text("在设置的资料库页面选择课程总目录，导入后按周显示。"))
                         .frame(maxWidth: .infinity, minHeight: 320)
                 }
-                otherWeeks
             }
             .padding(.horizontal, 28).padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -91,27 +90,18 @@ struct WeekHome: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .bottom, spacing: 12) {
-            Text(weekTitle(week)).font(.largeTitle.bold())
+        HStack(spacing: 6) {
+            Button { step(1) } label: { Image(systemName: "chevron.left").font(.title3.weight(.semibold)).frame(width: 30, height: 30) }
+                .disabled(index(of: week).map { $0 + 1 >= weekNumbers.count } ?? true).help("上一周").accessibilityLabel("上一周")
+            Text(weekTitle(week)).font(.largeTitle.bold()).monospacedDigit()
+            Button { step(-1) } label: { Image(systemName: "chevron.right").font(.title3.weight(.semibold)).frame(width: 30, height: 30) }
+                .disabled(index(of: week).map { $0 == 0 } ?? true).help("下一周").accessibilityLabel("下一周")
             Spacer()
-            HStack(spacing: 2) {
-                Button { step(1) } label: { Image(systemName: "chevron.left").frame(width: 26, height: 26) }
-                    .disabled(index(of: week).map { $0 + 1 >= weekNumbers.count } ?? true).help("上一周").accessibilityLabel("上一周")
-                if chosenWeek != nil {
-                    Button { chosenWeek = nil } label: { Image(systemName: "clock.arrow.circlepath").frame(width: 26, height: 26) }
-                        .help("回到最近学习的一周").accessibilityLabel("回到最近学习的一周")
-                }
-                Button { step(-1) } label: { Image(systemName: "chevron.right").frame(width: 26, height: 26) }
-                    .disabled(index(of: week).map { $0 == 0 } ?? true).help("下一周").accessibilityLabel("下一周")
+            if chosenWeek != nil {
+                Button { chosenWeek = nil } label: { Label("回到最近学习的一周", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly).frame(width: 30, height: 30) }
+                    .help("回到最近学习的一周")
             }
-            .buttonStyle(.plain).padding(4).glassSurface(Capsule(), interactive: true)
-            if let last = store.library.lastLecture, let lesson = lessons.first(where: { $0.id == last }) {
-                Button { store.open(lesson.id) } label: {
-                    Label(LessonCatalog.displayTitle(lesson), systemImage: "play.fill").lineLimit(1).frame(maxWidth: 240)
-                }.accessibilityLabel("继续 " + LessonCatalog.displayTitle(lesson))
-                .buttonStyle(.borderedProminent).controlSize(.large).buttonBorderShape(.capsule)
-            }
-        }
+        }.buttonStyle(.plain)
     }
     private func weekTitle(_ week: Int?) -> String { week.map { "Week \($0)" } ?? "未分周" }
     private func index(of week: Int?) -> Int? { weekNumbers.firstIndex { $0 == week } }
@@ -149,8 +139,8 @@ struct WeekHome: View {
 
     private var filters: some View {
         HStack(spacing: 12) {
-            chips(label: "课程", options: [("", "全部课程", nil)] + courses.map { ($0.id.uuidString, $0.name, store.courseColor($0.id).color) }, selection: $courseFilter)
-            chips(label: "类型", options: [("", "全部类型", nil)] + SessionKind.allCases.map { ($0.rawValue, $0.rawValue, nil) }, selection: $kindFilter)
+            chips(label: "课程", options: [("", "全部", nil)] + courses.map { ($0.id.uuidString, $0.name, store.courseColor($0.id).color) }, selection: $courseFilter)
+            chips(label: "类型", options: [("", "全部", nil)] + SessionKind.allCases.map { ($0.rawValue, $0.rawValue, nil) }, selection: $kindFilter)
             Spacer(minLength: 0)
         }
     }
@@ -191,12 +181,7 @@ struct WeekHome: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 520), spacing: 28, alignment: .top)], alignment: .leading, spacing: 24) {
                     ForEach(byCourse, id: \.0.id) { course, groups in
                         VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Circle().fill(store.courseColor(course.id).color).frame(width: 8, height: 8)
-                                Text(course.name).font(.title3.weight(.semibold))
-                                Spacer()
-                                Button("课程页") { navigation.select(course: course.id) }.buttonStyle(.link)
-                            }
+                            CourseHeading(name: course.name, color: store.courseColor(course.id).color) { navigation.select(course: course.id) }
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(alignment: .top, spacing: 16) {
                                     ForEach(groups) { LessonGroupCard(store: store, group: $0, statuses: statuses, analysis: analysis) }
@@ -209,42 +194,6 @@ struct WeekHome: View {
         }
     }
 
-    // MARK: Other weeks
-
-    @ViewBuilder private var otherWeeks: some View {
-        let others = sections.filter { $0.week != week }
-        if !others.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("其他周").font(.callout.weight(.semibold)).foregroundStyle(.secondary)
-                VStack(spacing: 0) {
-                    ForEach(Array(others.enumerated()), id: \.element.id) { index, section in
-                        if index > 0 { Divider().padding(.leading, 14) }
-                        weekRow(section)
-                    }
-                }.glassSurface(RoundedRectangle(cornerRadius: 16))
-            }
-        }
-    }
-    private func weekRow(_ section: WeekSection) -> some View {
-        let total = section.lessons.count, watched = section.lessons.filter(LessonCatalog.isWatched).count
-        let missing = section.lessons.filter { $0.transcriptVersion == nil }.count
-        return Button { chosenWeek = .some(section.week) } label: {
-            HStack(spacing: 12) {
-                Text(weekTitle(section.week)).font(.headline)
-                Text("\(total)").font(.callout).monospacedDigit().foregroundStyle(.secondary)
-                if missing > 0 {
-                    Label("\(missing)", systemImage: "waveform").font(.caption.weight(.semibold)).foregroundStyle(CourseColor.orange.color)
-                        .help("\(missing) 个课件没有字幕")
-                }
-                Spacer()
-                ProgressRing(value: total == 0 ? 0 : Double(watched) / Double(total))
-                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 14).frame(minHeight: 44).contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(weekTitle(section.week) + "，\(total) 个课件，已看完 \(watched)")
-    }
 }
 
 /// A lesson or a stacked series on the week page.
@@ -278,7 +227,7 @@ struct LessonGroupCard: View {
                     .overlay(alignment: .bottom) { progress.padding(10) }
                 }
                 .padding(.top, 10)
-                Text(group.isSeries ? group.title : LessonCatalog.displayTitle(lead)).font(.headline).lineLimit(1).help(lead.title)
+                Text(group.isSeries ? group.title : LessonCatalog.shortTitle(lead)).font(.headline).lineLimit(1).help(lead.title)
                 detail
             }
             .frame(width: 248, alignment: .leading).contentShape(Rectangle())
@@ -365,5 +314,24 @@ struct SeriesSegments: View {
                     .frame(width: width, height: 4)
             }
         }.accessibilityHidden(true)
+    }
+}
+
+/// Course name as a quiet link to its course page; a chevron appears on hover.
+private struct CourseHeading: View {
+    let name: String
+    let color: Color
+    let open: () -> Void
+    @LPState private var hovering = false
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 8) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(name).font(.title3.weight(.semibold))
+                Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.secondary).opacity(hovering ? 1 : 0)
+            }.contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).onHover { hovering = $0 }
+        .help("打开课程页").accessibilityLabel(name + "，打开课程页")
     }
 }

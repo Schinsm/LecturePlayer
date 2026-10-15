@@ -85,6 +85,20 @@ public enum LessonCatalog {
         let name = kind == .lecture ? "录像" : kind.rawValue + " 录像"
         return week(lesson).map { "Week \($0) " + name } ?? name
     }
+    /// Inside a week section the week is already shown: "课堂录像" / "Seminar 录像".
+    public static func shortTitle(_ lesson: Lecture) -> String {
+        let shown = lesson.displayTitle
+        guard shown == lesson.title, isCaptureName(lesson.title) else { return shown }
+        let kind = kind(lesson)
+        return kind == .lecture ? "课堂录像" : kind.rawValue + " 录像"
+    }
+    /// Lecture Capture exports open with about 14 s of copyright notice that their transcripts skip.
+    public static let captureSubtitleOffset = 14.0
+    public static func defaultSubtitleOffset(title: String) -> Double { isCaptureName(title) ? captureSubtitleOffset : 0 }
+    /// Lessons that should get the capture offset once: capture recordings still at 0 s.
+    public static func needsCaptureOffset(_ lesson: Lecture) -> Bool {
+        isCaptureName(lesson.title) && lesson.state.subtitleOffsetSeconds == 0
+    }
     public static func isCaptureName(_ title: String) -> Bool {
         title.range(of: #"^[A-Z]{3,5}\d{4,6}_\d{4}_[A-Z0-9]+\s+[A-Z]-s\d+-full$"#, options: .regularExpression) != nil
     }

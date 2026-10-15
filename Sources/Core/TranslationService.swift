@@ -12,7 +12,8 @@ public extension TranslationConfig {
         if providerID == .openAI {return try descriptor()}
         return TranslationModelDescriptor(id:providerID.rawValue+"-standard",displayName:providerID.title,description:"按服务统计",supportsReasoning:false,defaultReasoning:.none,pricing:TokenPricing(inputPerMillion:0,outputPerMillion:0,checkedDate:"2026-09-18",sourceURL:"https://azure.microsoft.com/en-us/pricing/details/translator/"))
     }
-    var parallelism: Int { providerID == .openAI && accelerated == true ? 2 : 1 }
+    /// Requests sent at once for one lesson. Only OpenAI runs in parallel; the other services limit callers themselves.
+    func parallelism(requested: Int) -> Int { providerID == .openAI ? min(6, max(1, requested)) : 1 }
     func batches(_ transcript: Transcript, ids: Set<String>? = nil) -> [TranslationBatch] {
         switch providerID {
         case .azure:return TranslationBatch.make(transcript,ids:ids,budget:5000,maxCues:100,utf16:true)

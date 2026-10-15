@@ -61,6 +61,21 @@ struct CourseColorMenu: View {
     }
 }
 
+/// Round 32-point glass button used for the player's top-bar menus, so their icons share one size and centre.
+struct GlassIcon: View {
+    let systemName: String
+    var body: some View {
+        Image(systemName: systemName).font(.system(size: 14, weight: .medium))
+            .frame(width: 32, height: 32).contentShape(Circle())
+    }
+}
+extension View {
+    func glassMenuStyle() -> some View {
+        menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .glassSurface(Circle(), interactive: true)
+    }
+}
+
 /// Liquid Glass on macOS 26 and later; the closest standard material on macOS 14 and 15.
 extension View {
     @ViewBuilder func glassSurface<S: Shape>(_ shape: S, interactive: Bool = false) -> some View {

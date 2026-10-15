@@ -5,7 +5,7 @@ import Testing
 struct V06Tests {
     @Test func legacyConfigAndUsageKeepUnknownFields() throws {
         let config=try Codec.decode(TranslationConfig.self,Data(#"{"model":"gpt-4o-mini","effort":"none","glossary":"","promptVersion":"faithful-zh-1","language":"zh-Hans"}"#.utf8))
-        #expect(config.providerID == .openAI && config.parallelism==1)
+        #expect(config.providerID == .openAI && config.parallelism(requested:4)==4 && config.parallelism(requested:9)==6)
         let t=try CoreTests().parsed();let old=Translation(ai:"已有",cacheKey:"legacy")
         let data=try Codec.encode(old);#expect(try Codec.decode(Translation.self,data)==old)
         var azure=config;azure.service = .azure
@@ -16,7 +16,7 @@ struct V06Tests {
         let t=Transcript(version:"x",original:Data(),format:"vtt",cues:cues)
         var c=TranslationConfig();c.service = .azure;c.accelerated=true
         let b=c.batches(t)
-        #expect(c.parallelism==1 && b.flatMap(\.targets)==cues)
+        #expect(c.parallelism(requested:6)==1 && b.flatMap(\.targets)==cues)
         #expect(b.allSatisfy{$0.targets.count<=100 && $0.targets.reduce(0){$0+$1.en.utf16.count}<=5000})
         var long=t;long.cues=[Cue(id:"huge",start:0,end:1,en:String(repeating:"a",count:6000))]
         #expect(c.batches(long).count==1)

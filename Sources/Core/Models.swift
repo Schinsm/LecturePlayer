@@ -44,6 +44,8 @@ public struct Lecture: Codable, Identifiable, Equatable, Sendable {
 }
 public struct Library: Codable, Equatable, Sendable {
     public var directoryRoot: String?; public var directoryBookmark: Data?
+    /// One-off data fixes already applied to this library, e.g. "capture-offset-14".
+    public var appliedMigrations: [String]?
     public var schema = 5; public var courses: [Course] = []; public var folders: [Folder] = []; public var lectures: [Lecture] = []; public var lastLecture: UUID?
     public init() {}
     public func validate() throws {

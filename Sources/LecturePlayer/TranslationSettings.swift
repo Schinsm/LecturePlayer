@@ -158,13 +158,21 @@ struct Keychain {
         }
     }
     /// Separate from confirmation and Keychain so the actual job can be exercised with mock providers.
+    /// OpenAI requests per lesson, from Settings (1–6, default 4).
+    var requestConcurrency:Int {concurrencyOverride ?? {let value=UserDefaults.standard.integer(forKey:"translationConcurrency");return value == 0 ? 4 : value}()}
+    /// Tests set this instead of the shared preference.
+    var concurrencyOverride:Int?
     func run(store:AppStore,lecture:Lecture,batches:[TranslationBatch],config:TranslationConfig,provider:any TranslationProvider) async {
         lessonID=lecture.id
         var cursor=0;var stopped=false;var completedRequests=0
         let started=Date()
         guard let file=try? store.repository?.transcriptURL(lecture.id,lecture.transcriptVersion ?? ""),var latestTranscript=try? await writer.read(file) else {status="无法读取字幕，未发送请求";return}
         latestTranscript=latestTranscript.viewing(config.providerID.rawValue)
-        struct Completed:Sendable {var batch:TranslationBatch;var result:TranslationResult;var seconds:Double;var id:UUID;var sent=true;var lease:RequestScheduler.Lease?=nil}
+        struct Completed:Sendable {var batch:TranslationBatch;var result:TranslationResult;var seconds:Double;var id:UUID;var sent=true;var lease:RequestScheduler.Lease?=nil;var rateLimited=false}
+        let parallelism=config.parallelism(requested:requestConcurrency)
+        // Slow start: one request until an answer comes back complete, so a bad key, an incomplete answer
+        // or a cancellation still stops before the next paid request. Then up to the configured concurrency.
+        var inFlight=0,limit=1,cleanStreak=0,warmedUp=false
         await withTaskGroup(of:Completed.self) { group in
             @MainActor func dispatch() -> Bool {
                 guard !pauseRequested,!stopped,!Task.isCancelled else{return false}
@@ -181,19 +189,45 @@ struct Keychain {
                         catch {return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
                         let valid=await MainActor.run { !self.pauseRequested && store.library.lectures.first(where:{$0.id==lecture.id})?.transcriptVersion==planned.sourceVersion }
                         guard valid,!Task.isCancelled else {await store.requests.pause();await store.requests.release(lease);return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
-                        let start=Date();let result:TranslationResult
-                        do {try Task.checkCancellation();result=try await provider.translate(planned,config:config)}
-                        catch is TranslationNotSent {await store.requests.release(lease);return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
-                        catch {result=(error as? APIError)?.result ?? TranslationResult(items:[],problem:error is CancellationError || (error as? URLError)?.code == .cancelled ? "请求已取消；用量未知，可能已计费" : "网络或服务请求失败；未自动重发，用量可能已计费")}
-                        return Completed(batch:planned,result:result,seconds:Date().timeIntervalSince(start),id:id,lease:lease)
+                        let start=Date();var result=TranslationResult(items:[]);var rateLimited=false
+                        // Rate limits, 5xx and failed connections cost nothing and are resent a few times;
+                        // anything else is reported and pauses the queue as before.
+                        for attempt in 0...RetryPolicy.maxRetries {
+                            do {try Task.checkCancellation();result=try await provider.translate(planned,config:config);break}
+                            catch is TranslationNotSent {await store.requests.release(lease);return Completed(batch:planned,result:TranslationResult(items:[]),seconds:0,id:id,sent:false)}
+                            catch {
+                                if let delay=RetryPolicy.delay(for:error,attempt:attempt),!Task.isCancelled {
+                                    rateLimited = rateLimited || (error as? APIError)?.status == 429
+                                    PerformanceTrace.record("translation.retry",delay)
+                                    try? await Task.sleep(for:.seconds(delay));continue
+                                }
+                                result=(error as? APIError)?.result ?? TranslationResult(items:[],problem:error is CancellationError || (error as? URLError)?.code == .cancelled ? "请求已取消；用量未知，可能已计费" : "网络或服务请求失败；已按规则重试，用量可能已计费");break
+                            }
+                        }
+                        return Completed(batch:planned,result:result,seconds:Date().timeIntervalSince(start),id:id,lease:lease,rateLimited:rateLimited)
                     }
+                    inFlight += 1
                     return true
                 }
                 return false
             }
-            for _ in 0..<config.parallelism {_ = dispatch()}
+            @MainActor func fill() {while inFlight<limit,dispatch() {}}
+            fill()
             while let done=await group.next() {
+                inFlight -= 1
                 if !done.sent {stopped=true;continue}
+                // Back off after a rate limit; win the slots back after a run of clean answers.
+                let answered=Set(done.result.items.map(\.id))
+                let complete=done.result.problem==nil && done.batch.targets.allSatisfy({answered.contains($0.id)})
+                if done.rateLimited {limit=max(1,limit/2);cleanStreak=0;warmedUp=true}
+                else if complete && !warmedUp {limit=parallelism;warmedUp=true}
+                else if limit<parallelism {cleanStreak += 1;if cleanStreak>=5 {limit += 1;cleanStreak=0}}
+                // A complete-looking answer frees its slot before the save, so the next request does not wait on disk.
+                // Saves still happen one at a time, in arrival order.
+                var released=false
+                if complete,!stopped,!pauseRequested,let lease=done.lease {
+                    await store.requests.release(lease);released=true;fill()
+                }
                 do {
                     let saved=try await commit(done.result,batch:done.batch,config:config,lecture:lecture,store:store,seconds:done.seconds,attemptID:done.id,deferFiles:true,queueSeconds:done.lease?.queueSeconds)
                     latestTranscript=saved.transcript
@@ -203,8 +237,8 @@ struct Keychain {
                     if completedRequests>=3 && !stopped && !pauseRequested {eta="预计还需约 \(max(1,Int(Date().timeIntervalSince(started)/Double(completedRequests)*Double(batches.count-completedRequests)/60))) 分钟"}
                 } catch {onPause?();stopped=true;store.storageFailed(error);status="资料库保存未完成："+StorageIssue(error).localizedDescription}
                 if stopped || pauseRequested {await store.requests.pause()}
-                if let lease=done.lease {await store.requests.release(lease)}
-                if !stopped && !pauseRequested {_ = dispatch()}
+                if !released,let lease=done.lease {await store.requests.release(lease)}
+                if !stopped && !pauseRequested {fill()}
             }
         }
         await writer.flushFiles()
@@ -250,7 +284,7 @@ struct APISettings: View {
     @AppStorage("effort") var effort = ReasoningEffort.none.rawValue
     @AppStorage("translationService") var service = "openAI"
     @AppStorage("azureRegion") var region = "global"
-    @AppStorage("translationAccelerated") var accelerated=false
+    @AppStorage("translationConcurrency") var concurrency=4
     @AppStorage("translationSingleCue") var single=false
     @LPState private var keyRevision=UUID()
     @LPState var key="";@LPState var status="";@LPState var account:DeepLAccountUsage?;@LPState var loadingUsage=false
@@ -303,7 +337,8 @@ struct APISettings: View {
         .onChange(of:service){_,_ in key="";status="";account=nil}
         if includesSpeed {
             Section("速度") {
-                Toggle("加速翻译",isOn:$accelerated).disabled(provider != .openAI).help("OpenAI 最多同时处理两个请求")
+                Stepper("同时请求数：\(concurrency)",value:$concurrency,in:1...6).disabled(provider != .openAI)
+                    .help("OpenAI 每课同时发送的请求数。遇到限流会自动减少；DeepL、Azure 和 Apple 始终逐个处理。")
                 DisclosureGroup("高级") {
                     Toggle("逐条处理字幕",isOn:$single).disabled(provider != .openAI)
                     Text("配置用于新任务。暂停时会保存已发出请求的结果；这些请求仍可能计费。").font(.caption).foregroundStyle(.secondary)

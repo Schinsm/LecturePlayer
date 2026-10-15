@@ -81,7 +81,11 @@ public struct APIError: LocalizedError, Sendable {
     public let status: Int
     public let unavailableModel: String?
     public let result: TranslationResult?
-    public init(status: Int, unavailableModel: String? = nil, result:TranslationResult?=nil) { self.status = status; self.unavailableModel = unavailableModel;self.result=result }
+    /// Seconds from the Retry-After header, when the service sent one.
+    public var retryAfter: Double?
+    /// False for answers that will not change on resend, such as an exhausted quota reported as 429.
+    public var retryable = true
+    public init(status: Int, unavailableModel: String? = nil, result:TranslationResult?=nil, retryAfter: Double? = nil, retryable: Bool = true) { self.status = status; self.unavailableModel = unavailableModel;self.result=result;self.retryAfter=retryAfter;self.retryable=retryable }
     public var errorDescription: String? {
         if let id = unavailableModel { return "当前 API 账户无法使用 \(TranslationModelCatalog.find(id)?.displayName ?? "所选模型")，请在设置中重新选择。没有自动切换模型。" }
         return "OpenAI HTTP \(status)。请检查 Key、账户权限、模型及参数；没有自动切换模型。"
@@ -112,7 +116,7 @@ public struct OpenAIProvider:TranslationProvider {
             let envelope=(try? JSONSerialization.jsonObject(with:data)) as? [String:Any]
             let code=(envelope?["error"] as? [String:Any])?["code"] as? String
             let failure = try Self.decode(data,targets:batch.targets,shortIDs:true,requestID:http.value(forHTTPHeaderField:"x-request-id"),model:config.model,httpStatus:http.statusCode,outputLimit:outputLimit)
-            throw APIError(status:http.statusCode,unavailableModel:(http.statusCode == 404 || code == "model_not_found" || code == "model_not_available") ? config.model : nil,result:failure)
+            throw APIError(status:http.statusCode,unavailableModel:(http.statusCode == 404 || code == "model_not_found" || code == "model_not_available") ? config.model : nil,result:failure,retryAfter:http.value(forHTTPHeaderField:"retry-after").flatMap(Double.init),retryable:code != "insufficient_quota")
         }
         return try Self.decode(data,targets:batch.targets,shortIDs:true,requestID:http.value(forHTTPHeaderField:"x-request-id"),model:config.model,outputLimit:outputLimit)
     }

@@ -41,7 +41,8 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         try s.processing.launch(entries,store:s,translationProvider:{_ in mock},analysisProvider:mock)
         s.current=s.library.lectures.last!.id
         await s.processing.worker?.value
-        #expect(await mock.peak==2)
+        // 0.9.1: the shared limit is 4 requests across lessons, translation and chapters.
+        let peak=await mock.peak;#expect(peak>2 && peak<=4)
         #expect(s.processing.entries.allSatisfy{$0.status=="完成"})
         #expect(await mock.translations==6); #expect(await mock.analyses==2); #expect(await mock.syntheses==2)
         for lesson in s.library.lectures {
@@ -64,7 +65,8 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         let (s,t)=try V052AppTests().fixture(),mock=ProcessingProbe(fail:true)
         try s.processing.launch(try proposed(s,t),store:s,translationProvider:{_ in mock},analysisProvider:mock)
         await s.processing.worker?.value
-        #expect(await mock.translations + mock.analyses == 2); #expect(await mock.syntheses==0)
+        // Slow start: each lesson's first translation fails, so no second paid translation is sent.
+        #expect(await mock.translations == 2); #expect(await mock.analyses == 2); #expect(await mock.syntheses==0)
         let record=try await AnalysisRepository(root:s.repository!.root).load(lessonID:s.library.lectures[0].id,sourceVersion:t.version)
         #expect(record?.completed == nil)
         #expect(s.processing.entries.allSatisfy{$0.status != "完成"})
@@ -81,9 +83,14 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         try s.processing.launch(entries,store:s,translationProvider:{_ in mock},analysisProvider:mock)
         for _ in 0..<100 {if await mock.active==2 {break};try await Task.sleep(nanoseconds:2_000_000)}
         s.processing.pause(s);await s.processing.worker?.value
-        #expect(await mock.translations + mock.analyses == 2); #expect(await mock.syntheses==0)
+        // Pausing drains what was already sent and sends nothing more. With four slots, a one-chunk lesson
+        // may already have reached its synthesis before the pause landed.
+        let sent=await mock.translations + mock.analyses + mock.syntheses
+        #expect(sent >= 2)
+        try await Task.sleep(nanoseconds:100_000_000)
+        #expect(await mock.translations + mock.analyses + mock.syntheses == sent)
         s.updateLecture(entries[0].id){$0.transcriptVersion="changed"}
         #expect(throws:(any Error).self) {try s.processing.launch(entries,store:s,translationProvider:{_ in mock},analysisProvider:mock)}
-        #expect(await mock.translations + mock.analyses == 2)
+        #expect(await mock.translations + mock.analyses + mock.syntheses == sent)
     }
 }
