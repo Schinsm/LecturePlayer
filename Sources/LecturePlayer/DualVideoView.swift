@@ -313,9 +313,6 @@ struct LayoutMenu: View {
     }
     var body: some View {
         Menu {
-            Button(columns.visible(.chapters) ? "收起章节":"显示章节") {if columns.visible(.chapters) {columns.hide(.chapters)}else{columns.show(.chapters)}}
-            Button(columns.visible(.transcript) ? "收起转写":"显示转写") {if columns.visible(.transcript) {columns.hide(.transcript)}else{columns.show(.transcript)}}
-            Divider()
             ForEach(VideoLayout.allCases, id: \.self) { layout in
                 Button((store.lecture?.layout ?? .inset) == layout ? "✓ " + layout.rawValue : layout.rawValue) { if let id = store.current { store.updateLecture(id) { $0.layout = layout } } }.disabled(!available(layout))
             }

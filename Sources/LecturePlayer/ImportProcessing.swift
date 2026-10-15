@@ -2,6 +2,31 @@ import Foundation
 import SwiftUI
 import Core
 
+/// Which follow-up steps one import row will get under "导入后自动处理".
+/// Step selection lives in Settings; the import sheet only switches the whole pipeline on or off.
+struct ImportStepPlan: Equatable {
+    enum Step: String { case translate = "翻译", chapters = "生成章节" }
+    enum Availability: Equatable { case disabled, unavailable(String), ready }
+    var steps: [Step]
+    var note: String
+    static let translateKey = "importAutoTranslate"
+    static let chaptersKey = "importAutoAnalyze"
+    static func make(existing: Bool, hasSubtitle: Bool, translation: Availability, chapters: Availability) -> ImportStepPlan {
+        if existing { return ImportStepPlan(steps: [], note: "关联原课件，不重新处理") }
+        if !hasSubtitle { return ImportStepPlan(steps: [], note: "没有字幕，只导入；之后可在课件中添加字幕") }
+        var steps: [Step] = [], skipped: [String] = []
+        for (step, availability) in [(Step.translate, translation), (.chapters, chapters)] {
+            switch availability {
+            case .ready: steps.append(step)
+            case .unavailable(let reason): skipped.append(step.rawValue + "：" + reason)
+            case .disabled: break
+            }
+        }
+        if steps.isEmpty && skipped.isEmpty { return ImportStepPlan(steps: [], note: "设置中未选择处理步骤，只导入") }
+        return ImportStepPlan(steps: steps, note: skipped.joined(separator: "；"))
+    }
+    var label: String { steps.isEmpty ? note : steps.map(\.rawValue).joined(separator: " → ") + (note.isEmpty ? "" : "（" + note + "）") }
+}
 struct ImportAnalysisPreview {
     var rowID: UUID
     var task: AnalysisTaskState

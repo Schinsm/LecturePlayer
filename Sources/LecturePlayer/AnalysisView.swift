@@ -46,7 +46,6 @@ struct AnalysisPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ReadingPaneHeader("章节",pane:.chapters,columns:store.readingColumns,following:session.chapterFollowing,follow:{session.followChapters();followCurrentChapter()}) {chapterActions}
-            TextField("搜索",text:$session.chapterQuery).textFieldStyle(.roundedBorder).accessibilityLabel("搜索章节")
             if let id = lesson?.id, let error = job.loadErrors[id] {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 Button("重新读取") { Task { await job.load(store: store, lessonID: id) } }
@@ -81,6 +80,7 @@ struct AnalysisPanel: View {
         .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce();followCurrentChapter()}}
         .onChange(of:chapterQuery){_,value in if !value.isEmpty {session.browseChapters()};refreshSearch()}
         .onChange(of:currentChapterID){_,_ in followCurrentChapter()}
+        .onChange(of:session.chapterFollowing){_,following in if following {followCurrentChapter()}}
         .onReceive(playback.clock.$snapshot.map(\.seconds)) {value in if visible {updateCurrent(value)}}
         .onChange(of:lesson?.state.offset) {_,_ in updateCurrent(playback.position)}
         .sheet(isPresented: $confirming) {
@@ -90,24 +90,28 @@ struct AnalysisPanel: View {
     private func documentContent(_ document:AnalysisDocument)->some View {
         ScrollViewReader {proxy in
             ScrollView {
-                LazyVStack(alignment:.leading,spacing:16) {
-                    if document.topics != nil {ForEach(filteredTopics){topic in topicRow(topic)}}
-                    else {ForEach(filteredChapters){chapter in chapterRow(chapter)}}
+                // One flat lazy list of topic headers and chapter rows. Each row's ForEach identity is
+                // its "topic:"/"chapter:" id, so scrollTo reaches a chapter even before it is built.
+                LazyVStack(alignment:.leading,spacing:8) {
+                    ForEach(listRows(document)) {row in
+                        switch row {
+                        case .topic(let topic,let first): topicRow(topic).padding(.top,first ? 0:8)
+                        case .chapter(let chapter,let nested): chapterRow(chapter).padding(.leading,nested ? 28:0).padding(.trailing,nested ? 8:0)
+                        }
+                    }
                     if !chapterQuery.isEmpty && filteredTopics.isEmpty && filteredChapters.isEmpty {Text("无结果").foregroundStyle(.secondary)}
                 }.padding(.trailing,8).scrollTargetLayout()
             }.scrollPosition(id:$session.chapterScrollID)
             .background(ScrollIntent(enabled:visible,onManual:{session.browseChapters()}))
             .onChange(of:locateRequest) {_,request in
                 guard visible,session.chapterFollowing,let chapter=currentChapterID,!stale else{return}
-                let topic=topicByChapter[chapter]
-                if let topic {expandedTopics.insert(topic)}
+                if let topic=topicByChapter[chapter] {expandedTopics.insert(topic)}
                 Task { @MainActor in
                     await Task.yield()
                     guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
-                    // A lazy row far down the list is not built yet, so its explicit "topic:"/"chapter:"
-                    // id does not exist. Only the ForEach identity is known up front: scroll to that
-                    // row first, then refine to the chapter once it has been built.
-                    proxy.scrollTo(topic ?? chapter,anchor:.top)
+                    // The first jump lands on estimated heights for rows not built yet; once they are
+                    // built, the second pass corrects the position.
+                    proxy.scrollTo("chapter:"+chapter,anchor:UnitPoint(x:0.5,y:0.3))
                     try? await Task.sleep(for:.milliseconds(80))
                     guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
                     proxy.scrollTo("chapter:"+chapter,anchor:UnitPoint(x:0.5,y:0.3))
@@ -162,8 +166,18 @@ struct AnalysisPanel: View {
         openedDocument=date;expandedTopics=[]
         if let topic=topics.first(where:{$0.subtopics.contains(where:isCurrent)}) {expandedTopics.insert(topic.id)}
     }
+    private func listRows(_ document:AnalysisDocument)->[ChapterListRow] {
+        guard document.topics != nil else {return filteredChapters.map {.chapter($0,nested:false)}}
+        var rows:[ChapterListRow]=[]
+        for topic in filteredTopics {
+            rows.append(.topic(topic,first:rows.isEmpty))
+            guard expandedTopics.contains(topic.id) || !chapterQuery.isEmpty else{continue}
+            let topicHit=(topic.title + " " + topic.overview).localizedCaseInsensitiveContains(chapterQuery)
+            for child in topic.subtopics where chapterQuery.isEmpty || topicHit || chapterMatches(child) {rows.append(.chapter(child,nested:true))}
+        }
+        return rows
+    }
     private func topicRow(_ topic: AnalysisTopic) -> some View {
-        VStack(alignment:.leading,spacing:8) {
             HStack(alignment:.top) {
                 Button {session.browseChapters();if !expandedTopics.insert(topic.id).inserted {expandedTopics.remove(topic.id)}} label: {
                     Image(systemName:expandedTopics.contains(topic.id) ? "chevron.down" : "chevron.right").frame(width:24,height:28)
@@ -175,15 +189,7 @@ struct AnalysisPanel: View {
                         Text(topic.overview).font(.callout).foregroundStyle(.secondary)
                     }.frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
                 }.buttonStyle(.plain).disabled(stale)
-            }
-            if expandedTopics.contains(topic.id) || !chapterQuery.isEmpty {
-                ForEach(topic.subtopics.filter {chapterQuery.isEmpty || (topic.title + " " + topic.overview).localizedCaseInsensitiveContains(chapterQuery) || chapterMatches($0)}) {child in
-                    chapterRow(child).padding(.leading,20)
-                }
-            }
-        }.padding(8)
-
-            .id("topic:"+topic.id)
+            }.padding(8)
             .accessibilityValue(currentTopicID==topic.id ? "当前主题":"")
     }
     private func topicRange(_ first:AnalysisChapter,_ last:AnalysisChapter) -> String {
@@ -210,7 +216,7 @@ struct AnalysisPanel: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(rangeLabel(chapter))，\(chapter.title)")
             .accessibilityValue(isCurrent(chapter) ? "当前知识点":"")
-            .id("chapter:"+chapter.id)
+            .chapterRowProbe(chapter.id,current:isCurrent(chapter))
     }
     private func cueRange(_ chapter: AnalysisChapter) -> (Cue, Cue)? {
         guard let first = cueLookup[chapter.startCueID],
@@ -406,5 +412,49 @@ private struct ChapterPlaybackBadge:View {
         Label(playing ? "正在播放":"当前位置",systemImage:playing ? "play.fill":"location.fill")
             .font(.caption2).foregroundStyle(Color.accentColor).fixedSize()
             .onReceive(playback.$playing.removeDuplicates()){playing=$0}
+    }
+}
+
+private enum ChapterListRow:Identifiable {
+    case topic(AnalysisTopic,first:Bool)
+    case chapter(AnalysisChapter,nested:Bool)
+    var id:String {
+        switch self {
+        case .topic(let topic,_): "topic:"+topic.id
+        case .chapter(let chapter,_): "chapter:"+chapter.id
+        }
+    }
+}
+
+#if DEBUG
+/// Test-only: where the highlighted chapter row sits, in window coordinates (top-left origin).
+@MainActor enum ChapterRowProbe {
+    static var current:(id:String,frame:CGRect)? {entry.map {($0.id,$0.frame)}}
+    fileprivate static var entry:(id:String,token:UUID,frame:CGRect)?
+}
+private struct ChapterRowProbeView:View {
+    let id:String
+    let active:Bool
+    @LPState private var token=UUID()
+    var body:some View {
+        GeometryReader {proxy in
+            let frame=proxy.frame(in:.global)
+            Color.clear
+                .onAppear {if active {ChapterRowProbe.entry=(id,token,frame)}}
+                .onChange(of:frame) {_,value in if active {ChapterRowProbe.entry=(id,token,value)}}
+                .onChange(of:active) {_,value in if value {ChapterRowProbe.entry=(id,token,frame)}}
+                // A rebuilt row appears before the old one disappears; only the owner may clear.
+                .onDisappear {if ChapterRowProbe.entry?.token==token {ChapterRowProbe.entry=nil}}
+        }
+    }
+}
+#endif
+extension View {
+    func chapterRowProbe(_ id:String,current:Bool)->some View {
+        #if DEBUG
+        background(ChapterRowProbeView(id:id,active:current))
+        #else
+        self
+        #endif
     }
 }

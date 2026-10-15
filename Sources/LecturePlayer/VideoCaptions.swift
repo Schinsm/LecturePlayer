@@ -8,7 +8,7 @@ struct VideoCaptionControls: View {
     @AppStorage("hideSpeakerLabels") private var hideSpeakers = true
     private var value: VideoCaptionPreferences { presentation.value }
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             Button { update { $0.enabled.toggle() } } label: {
                 Image(systemName: value.enabled ? "captions.bubble.fill" : "captions.bubble")
                     .foregroundStyle(value.enabled ? Color.accentColor : Color.primary)
@@ -37,7 +37,8 @@ struct VideoCaptionControls: View {
                         Text("中文使用右侧选择的译文来源；缺少中文时显示英文。").font(.caption).foregroundStyle(.secondary)
                     }.padding(18).frame(width: 310).onDisappear {presentation.setEditing(false)}
                 }
-        }.disabled(store.transcript?.cues.isEmpty != false)
+        }.padding(.horizontal, 6).frame(height: 24).background(Color.primary.opacity(0.08), in: Capsule())
+        .disabled(store.transcript?.cues.isEmpty != false)
     }
     private func update(_ change: (inout VideoCaptionPreferences) -> Void) {
         presentation.update(change)

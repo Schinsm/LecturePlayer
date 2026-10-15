@@ -37,6 +37,8 @@ private actor ConcurrentMock:TranslationProvider {
         #expect(result.usage!.allSatisfy{$0.attemptID != nil})
         #expect(result.translations.values.allSatisfy{$0.service == .openAI})
         #expect(try Data(contentsOf:subtitle)==t.original)
+        // Deferred sidecar writes report back to the library through an async observer.
+        for _ in 0..<80 where (s.library.lectures[0].sidecars?.count ?? 0) < 2 {try await Task.sleep(for:.milliseconds(25))}
         let files=try #require(s.library.lectures[0].sidecars)
         #expect(files.count==2)
         let vtt=try #require(files.keys.first{$0.hasSuffix("zh.vtt")})

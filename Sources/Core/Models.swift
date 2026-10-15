@@ -3,6 +3,8 @@ import CryptoKit
 
 public struct Course: Codable, Identifiable, Equatable, Sendable {
     public var directoryPath: String?
+    /// True once the user picked `color`; otherwise the app assigns one by name order.
+    public var colorPicked: Bool?
     public var id = UUID(); public var name: String; public var semester = ""; public var color = "blue"; public var order = 0; public var archived = false; public var glossary = "NPV=净现值\nFCF=自由现金流\nWACC=加权平均资本成本\nYTM=到期收益率"
     public init(name: String, order: Int = 0) { self.name = name; self.order = order }
 }

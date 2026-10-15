@@ -89,6 +89,8 @@ import Core
         playback.load(library.lectures[0]); try await V04PlaybackTests().wait(playback)
         let source = try #require(playback.views.first), item = try #require(playback.player.currentItem)
         let position = playback.position, generation = playback.displayGeneration
+        // Settle the periodic 5 s save first; under load its first tick could otherwise land after the hook below.
+        playback.persist()
         var writes = 0, completionWrites = 0
         playback.save = { _,_,_ in writes += 1 }
         playback.completionChanged = { _,_ in completionWrites += 1 }

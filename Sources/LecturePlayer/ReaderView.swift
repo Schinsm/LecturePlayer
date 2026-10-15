@@ -46,10 +46,14 @@ struct PlaybackHeader: View {
             Button { store.back() } label: { Image(systemName: "chevron.left") }.help("课程库").accessibilityLabel("课程库")
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.breadcrumb).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text(store.lecture?.displayTitle ?? "").font(.headline).lineLimit(1)
+                Text(store.lecture.map(LessonCatalog.displayTitle) ?? "").font(.headline).lineLimit(1).help(store.lecture?.title ?? "")
                 if store.lessonLoading { Text("正在载入课件…").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()
+            if let id=store.current {ReadingSearchField(session:store.readerPresentation.session(id),columns:store.readingColumns)}
+            ReadingSwitches(columns:store.readingColumns)
+            LayoutMenu(store:store,playback:store.playback,columns:store.readingColumns)
+                .padding(.horizontal,6).frame(height:30).glassSurface(Capsule(),interactive:true)
             Menu {
                 Button("本课文件…") { files=true }
                 Button("添加或更换英文字幕…") {store.replaceSubtitle()}.disabled(store.translation.busy)
@@ -68,8 +72,70 @@ struct PlaybackHeader: View {
                 ForEach(store.lecture?.marks ?? []) { mark in
                     Button("\(timeLabel(mark.seconds)) · \(mark.note)") { store.playback.seek(mark.seconds) }
                 }
-            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 28).help("本课文件、导出与书签").accessibilityLabel("本课文件、导出与书签")
-        }.buttonStyle(.borderless).padding(12).sheet(isPresented:$files){DataLocations(store:store,lessonID:store.current)}.sheet(isPresented: $details) { if let id = store.current { LessonDetails(store: store, ids: [id]) } }
+            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 30, height: 30).glassSurface(Circle(),interactive:true).help("本课文件、导出与书签").accessibilityLabel("本课文件、导出与书签")
+        }.buttonStyle(.borderless).padding(.horizontal,12).padding(.vertical,10).sheet(isPresented:$files){DataLocations(store:store,lessonID:store.current)}.sheet(isPresented: $details) { if let id = store.current { LessonDetails(store: store, ids: [id]) } }
+    }
+}
+
+/// Reports pointer movement over the video without taking clicks from it.
+struct PointerActivity: NSViewRepresentable {
+    let moved: () -> Void
+    func makeNSView(context: Context) -> TrackingView { let view = TrackingView(); view.moved = moved; return view }
+    func updateNSView(_ view: TrackingView, context: Context) { view.moved = moved }
+    final class TrackingView: NSView {
+        var moved: (() -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+        }
+        override func mouseMoved(with event: NSEvent) { moved?() }
+        override func mouseEntered(with event: NSEvent) { moved?() }
+    }
+}
+
+/// One search for both reading columns: chapters filter, the transcript highlights matches.
+struct ReadingSearchField: View {
+    @ObservedObject var session:ReaderSession
+    @ObservedObject var columns:ReadingColumns
+    @FocusState private var focused:Bool
+    var body: some View {
+        if columns.value.enabled {
+            HStack(spacing:6) {
+                Image(systemName:"magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索章节与转写",text:Binding(get:{session.reader.query},set:{value in
+                    if value.isEmpty {clear()} else {session.reader.search(value);session.chapterQuery=value}
+                })).textFieldStyle(.plain).focused($focused).frame(width:180).accessibilityLabel("搜索章节与转写")
+                if !session.reader.query.isEmpty {
+                    Button {clear()} label: {Image(systemName:"xmark.circle.fill").foregroundStyle(.secondary)}
+                        .buttonStyle(.plain).help("清除搜索").accessibilityLabel("清除搜索")
+                }
+            }
+            .padding(.horizontal,10).frame(height:30).glassSurface(Capsule())
+            .onChange(of:session.searchRequest) {_,_ in focused=true}
+        }
+    }
+    /// Leaving search returns both columns to the playing position.
+    private func clear() {session.reader.resume();session.followChapters()}
+}
+
+/// 章节 / 转写 switches: the single place to show or hide each reading column.
+struct ReadingSwitches: View {
+    @ObservedObject var columns:ReadingColumns
+    var body: some View {
+        HStack(spacing:2) {
+            item("章节",icon:"list.bullet",pane:.chapters)
+            item("转写",icon:"text.alignleft",pane:.transcript)
+        }.padding(3).glassSurface(Capsule())
+    }
+    private func item(_ title:String,icon:String,pane:ReadingColumns.Pane)->some View {
+        let on=columns.isOn(pane)
+        return Button {columns.toggle(pane)} label: {
+            Label(title,systemImage:icon).font(.callout.weight(on ? .semibold:.regular)).padding(.horizontal,10).frame(height:24)
+                .background {if on {Capsule().fill(Color.primary.opacity(0.14))}}.contentShape(Capsule())
+        }.buttonStyle(.plain).foregroundStyle(on ? .primary:.secondary)
+        .help(on ? "收起"+title:"显示"+title).accessibilityLabel(title).accessibilityValue(on ? "显示":"已收起")
     }
 }
 
@@ -78,15 +144,27 @@ struct VideoPane: View {
     @ObservedObject var store: AppStore
     @ObservedObject var playback: Playback
     @LPState private var resumed = false
+    @LPState private var controlsShown = true
+    @LPState private var overControls = false
+    @LPState private var hideTask: Task<Void,Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         VStack(spacing: 10) {
-            HStack {
-                Spacer()
-                LayoutMenu(store:store,playback:playback,columns:store.readingColumns)
-            }.frame(height: 22).buttonStyle(.borderless)
             DualVideoView(store: store, playback: playback)
                 .background(VideoEdgeAnchor())
-                .overlay(alignment: .bottom) { VideoCaptionOverlay(store: store, playback: playback, presentation:store.captions) }
+                .overlay(alignment: .bottom) {
+                    VideoCaptionOverlay(store: store, playback: playback, presentation:store.captions)
+                        .padding(.bottom, controlsShown ? 96 : 0)
+                }
+                // Controls float over the video and fade out during playback when the pointer rests.
+                .overlay(PointerActivity { revealControls() })
+                .overlay(alignment: .bottom) {
+                    controls
+                        .frame(maxWidth: 820).padding(.horizontal, 16).padding(.bottom, 14)
+                        .opacity(controlsShown ? 1 : 0).allowsHitTesting(controlsShown)
+                        .onHover { inside in overControls = inside; if !inside { scheduleHide() } }
+                }
+                .onChange(of: playback.playing) { _, playing in if playing { scheduleHide() } else { revealControls() } }
             if let error = playback.error {
                 Text(error).foregroundStyle(.red)
                 if playback.missing.isEmpty {
@@ -96,6 +174,10 @@ struct VideoPane: View {
                 } else { Button("重新定位文件") { store.relocate() } }
             }
             PlaylistEndAction(store:store,playback:playback,presentation:store.playlist)
+        }.padding(.horizontal, 12).padding(.bottom, 10)
+    }
+    private var controls: some View {
+        VStack(spacing: 6) {
             PlaybackPositionSlider(playback:playback, clock:playback.clock)
             ViewThatFits(in: .horizontal) {
                 controlRow(compact: false)
@@ -104,8 +186,24 @@ struct VideoPane: View {
                     timeDisplay.frame(maxWidth: .infinity, alignment: .leading)
                     HStack { transportControls; Spacer(minLength: 8); audioControls(compact: true) }
                 }
-            }.buttonStyle(.borderless).padding(.bottom, 10)
-        }.padding(.horizontal, 12)
+            }.buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .glassSurface(RoundedRectangle(cornerRadius: 20))
+        .environment(\.colorScheme, .dark)
+    }
+    private func revealControls() {
+        if !controlsShown { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { controlsShown = true } }
+        scheduleHide()
+    }
+    private func scheduleHide() {
+        hideTask?.cancel()
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            // VoiceOver users keep the controls: hidden controls leave the accessibility tree.
+            guard !Task.isCancelled, playback.playing, !overControls, !NSWorkspace.shared.isVoiceOverEnabled else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { controlsShown = false }
+        }
     }
     private var timeDisplay: some View {
         PlaybackTimeLabel(clock:playback.clock,duration:playback.duration)
@@ -136,14 +234,10 @@ struct VideoPane: View {
                 PlaybackSpeedButton(speed: store.lecture?.state.speed ?? 1) { speed in
                     if let id = store.current { store.updateLecture(id) { $0.state.speed = speed }; playback.speed(speed) }
                 }.frame(width: compact ? 55 : 80, height: 24)
-                Button { if compact { volumeOpen.toggle() } else { playback.toggleMute() } } label: { Image(systemName: playback.volume == 0 ? "speaker.slash" : "speaker.wave.2") }.accessibilityLabel("静音或恢复音量")
+                Button { volumeOpen.toggle() } label: { Image(systemName: playback.volume == 0 ? "speaker.slash" : "speaker.wave.2") }.accessibilityLabel("音量").help("音量")
                     .popover(isPresented: $volumeOpen) {
-                        HStack { Button {playback.toggleMute()} label: {Image(systemName: "speaker.slash")}; Slider(value: Binding(get: {playback.volume}, set: {playback.setVolume($0)}), in: 0...1).frame(width: 140) }.padding()
+                        HStack { Button {playback.toggleMute()} label: {Image(systemName: playback.volume == 0 ? "speaker.wave.2" : "speaker.slash")}.accessibilityLabel("静音或恢复音量"); Slider(value: Binding(get: {playback.volume}, set: {playback.setVolume($0)}), in: 0...1).frame(width: 140).accessibilityLabel("音量") }.padding()
                     }
-                if !compact {
-                    Slider(value: Binding(get: { playback.volume }, set: { playback.setVolume($0) }), in: 0...1)
-                        .frame(width: 120).accessibilityLabel("音量")
-                }
                 StudyFullscreenButton()
         }.fixedSize(horizontal: true, vertical: false)
     }
@@ -171,10 +265,8 @@ struct ReaderPane: View {
     @LPState private var matchIndex = -1
     @AppStorage("fontSize") private var fontSize = 17.0
     @AppStorage("lineSpacing") private var spacing = 5.0
-    @FocusState private var searchFocused: Bool
     @AppStorage("hideSpeakerLabels") private var hideSpeakers = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @LPState private var handledSearchRequest=0
     @LPState private var index = ReadingIndex()
     private var units: [TranscriptReadingUnit] {index.units}
     private var cues: [Cue] { store.transcript?.cues ?? [] }
@@ -206,18 +298,14 @@ struct ReaderPane: View {
                 } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize().help("转写阅读设置").accessibilityLabel("转写阅读设置")
             }
             .popover(isPresented:$syncOpen){SubtitleSyncPopover(offset:offset,update:setOffset)}
-            HStack {
-                TextField("搜索",text:Binding(get:{reader.query},set:{reader.search($0);updateSearch()}))
-                    .focused($searchFocused).textFieldStyle(.roundedBorder)
-                if !reader.query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-                    Text(matches.isEmpty ? "无结果":"\(matches.count)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
             TranslationControls(store:store,job:store.translation,query:reader.query)
             ScrollViewReader { proxy in
-                if !reader.query.isEmpty {
-                    HStack { Button { jumpMatch(-1, proxy) } label: { Image(systemName: "chevron.up") }.help("上一匹配")
-                        Button { jumpMatch(1, proxy) } label: { Image(systemName: "chevron.down") }.help("下一匹配")
+                if !reader.query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                    HStack(spacing:8) {
+                        Text(matches.isEmpty ? "无结果" : matchIndex < 0 ? "\(matches.count) 处" : "\(matchIndex+1)/\(matches.count)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        Spacer()
+                        Button { jumpMatch(-1, proxy) } label: { Image(systemName: "chevron.up") }.help("上一匹配").accessibilityLabel("上一匹配")
+                        Button { jumpMatch(1, proxy) } label: { Image(systemName: "chevron.down") }.help("下一匹配").accessibilityLabel("下一匹配")
                     }.disabled(matches.isEmpty).buttonStyle(.borderless)
                 }
                 ScrollView {
@@ -248,7 +336,8 @@ struct ReaderPane: View {
                     }
             }
         }.padding(12)
-            .onChange(of:session.searchRequest){_,_ in focusRequestedSearch()}
+            .onChange(of:reader.query){_,_ in updateSearch()}
+            .onChange(of:reader.following){_,following in if following {scrollRequest += 1}}
             .onAppear { rebuild() }
             .onChange(of: sourceRequest) { _, request in
                 handleSourceRequest()
@@ -259,16 +348,12 @@ struct ReaderPane: View {
             .onChange(of: hideSpeakers) {_,_ in updateSearch()}
             .onChange(of: offset) { _, _ in updateActive(playback.position); if visible,reader.following {scrollRequest += 1} }
             .onReceive(playback.clock.$snapshot.map(\.seconds)) { if visible {updateActive($0)} }
-            .onChange(of:visible){_,value in if value {updateActive(playback.position);updateSearch();focusRequestedSearch();handleSourceRequest()}}
+            .onChange(of:visible){_,value in if value {updateActive(playback.position);updateSearch();handleSourceRequest()}}
     }
 
     private func handleSourceRequest() {
         guard visible,let request=sourceRequest,request.id != session.handledSourceRequest,cues.contains(where:{$0.id==request.cueID}) else{return}
         session.handledSourceRequest=request.id;reader.browse();scrollID=unitID(request.cueID);sourceScrollRequest += 1
-    }
-    private func focusRequestedSearch() {
-        guard visible,session.searchRequest != handledSearchRequest else{return}
-        handledSearchRequest=session.searchRequest;searchFocused=true;reader.browse()
     }
     private var readingRows: some View {
         ForEach(units) { unit in readingRow(unit) }

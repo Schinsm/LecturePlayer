@@ -55,6 +55,9 @@ actor ThumbnailRenderer {
 }
 struct LessonThumbnail:View {
     let lesson:Lecture
+    var width:CGFloat=128
+    var height:CGFloat=72
+    var radius:CGFloat=8
     @LPState private var image:NSImage?
     @LPState private var failed=false
     @LPState private var missing=false
@@ -63,10 +66,10 @@ struct LessonThumbnail:View {
     private var identity:String { lesson.mediaSources.map { "\($0.id)-\($0.path)-\($0.contentHash ?? "")-\($0.role)" }.joined(separator:"|") }
     var body:some View {
         ZStack {
-            RoundedRectangle(cornerRadius:8).fill(.quaternary)
-            if let image {Image(nsImage:image).resizable().scaledToFit()}
+            RoundedRectangle(cornerRadius:radius).fill(.quaternary)
+            if let image {Image(nsImage:image).resizable().scaledToFill().frame(width:width,height:height)}
             else {VStack(spacing:4){Image(systemName:missing ? "video.slash" : "video");Text(missing ? "视频缺失" : failed ? "无法生成预览" : "正在生成预览").font(.caption2)}}
-        }.frame(width:128,height:72).clipShape(RoundedRectangle(cornerRadius:8))
+        }.frame(width:width,height:height).clipShape(RoundedRectangle(cornerRadius:radius))
         .task(id:identity) {
             image=nil;failed=false;missing=false
             guard let source=await ThumbnailRenderer.shared.source(for:lesson) else{missing=true;return}

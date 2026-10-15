@@ -17,6 +17,8 @@ struct DirectoryPresentationIndex {
 @MainActor final class DirectoryPresentation:ObservableObject {
     @Published var course:UUID?
     @Published var folder:UUID?
+    /// The week overview replaces the course page until a course or folder is chosen.
+    @Published var weekHome=true
     @Published private(set) var index=DirectoryPresentationIndex()
     @Published private(set) var missing=Set<UUID>()
     @Published private(set) var unlinkedCount=0
@@ -39,27 +41,41 @@ struct DirectoryPresentationIndex {
             guard token==generation else{return};if absent != missing {missing=absent}
         }
     }
-    func select(course:UUID?,folder:UUID?=nil) {self.course=course;self.folder=folder}
+    func select(course:UUID?,folder:UUID?=nil) {self.course=course;self.folder=folder;weekHome=false}
+    func showWeekHome() {weekHome=true}
 }
 extension AppStore {
     func refreshDirectoryPresentation(){navigation.update(library,pending:pendingFiles);playlist.update(library)}
 }
 struct DirectorySidebar:View {
     @ObservedObject var navigation:DirectoryPresentation
+    let store:AppStore
     @Environment(\.openSettings) private var openSettings
     var body:some View {
         List {
+            Button{navigation.showWeekHome()}label:{Label("按周",systemImage:"calendar").frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())}
+                .buttonStyle(.plain).listRowBackground(navigation.weekHome ? Color.accentColor.opacity(0.16):Color.clear)
+            Section("课程") {
             ForEach(navigation.index.courses) {course in
                 Group {
                     if let children=navigation.index.roots[course.id],!children.isEmpty {
                         DisclosureGroup {nodes(children,course:course.id)} label:{courseButton(course)}
                     } else {courseButton(course)}
-                }.listRowBackground(navigation.course==course.id && navigation.folder==nil ? Color.accentColor.opacity(0.16):Color.clear)
+                }.listRowBackground(!navigation.weekHome && navigation.course==course.id && navigation.folder==nil ? Color.accentColor.opacity(0.16):Color.clear)
+            }
             }
             if navigation.unlinkedCount>0 {Section {Button("待关联课件 · \(navigation.unlinkedCount)"){navigation.select(course:nil)}}}
         }.listStyle(.sidebar).toolbar(removing:.sidebarToggle).safeAreaInset(edge:.bottom){HStack{Button{openSettings()}label:{Image(systemName:"gearshape")}.buttonStyle(.plain).help("设置（⌘,）").accessibilityLabel("设置");Spacer()}.padding(16)}
     }
-    private func courseButton(_ c:Course)->some View {Button{navigation.select(course:c.id)}label:{Label(c.name,systemImage:"folder").lineLimit(1).help(c.name).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())}.buttonStyle(.plain).contextMenu{Button("在 Finder 打开"){if let path=c.directoryPath {NSWorkspace.shared.open(URL(fileURLWithPath:path))}}}}
+    private func courseButton(_ c:Course)->some View {
+        Button{navigation.select(course:c.id)}label:{
+            Label {Text(c.name).lineLimit(1)} icon: {Circle().fill(CourseColor.resolve(c,among:navigation.index.courses).color).frame(width:9,height:9)}
+                .help(c.name).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).contextMenu{
+            CourseColorMenu(store:store,courseID:c.id)
+            Button("在 Finder 打开"){if let path=c.directoryPath {NSWorkspace.shared.open(URL(fileURLWithPath:path))}}
+        }
+    }
     private func nodes(_ folders:[Folder],course:UUID)->some View {ForEach(folders){f in DirectoryNode(navigation:navigation,folder:f,course:course)}}
 }
 private struct DirectoryNode:View {
@@ -69,7 +85,7 @@ private struct DirectoryNode:View {
         Group {
             if let children=navigation.index.children[folder.id],!children.isEmpty {DisclosureGroup {ForEach(children){DirectoryNode(navigation:navigation,folder:$0,course:course)}}label:{label}}
             else {label}
-        }.listRowBackground(navigation.folder==folder.id ? Color.accentColor.opacity(0.16):Color.clear)
+        }.listRowBackground(!navigation.weekHome && navigation.folder==folder.id ? Color.accentColor.opacity(0.16):Color.clear)
     }
     var label:some View {Button{navigation.select(course:course,folder:folder.id)}label:{Label(folder.name,systemImage:"folder").lineLimit(1).help(folder.name).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())}.buttonStyle(.plain).contextMenu{Button("在 Finder 打开"){if let path=folder.directoryPath {NSWorkspace.shared.open(URL(fileURLWithPath:path))}}}}
 }

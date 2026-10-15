@@ -2,6 +2,12 @@ import SwiftUI
 import AppKit
 import Core
 
+/// Lets another window ask the Settings window to show a specific page.
+@MainActor final class PreferencesNavigation: ObservableObject {
+    static let shared = PreferencesNavigation()
+    @Published var requested: PreferencesPage?
+}
+
 enum PreferencesPage: String, CaseIterable, Identifiable {
     case general, playback, library, translation, usage, backup
     var id: Self { self }
@@ -32,6 +38,8 @@ struct PreferencesView: View {
     @LPState private var page: PreferencesPage? = .general
     @LPState private var locations = false
     @AppStorage("appearance") private var appearance = "系统"
+    @AppStorage(ImportStepPlan.translateKey) private var importTranslate = true
+    @AppStorage(ImportStepPlan.chaptersKey) private var importChapters = true
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     private let refreshCredentials: Bool
@@ -56,6 +64,10 @@ struct PreferencesView: View {
             if refreshCredentials { KeychainAvailability.shared.refreshAll() }
         }
         .sheet(isPresented: $locations) { DataLocations(store: store) }
+        .onReceive(PreferencesNavigation.shared.$requested.compactMap { $0 }) { next in
+            page = next
+            PreferencesNavigation.shared.requested = nil
+        }
     }
     @ViewBuilder private var content: some View {
         switch page ?? .general {
@@ -93,6 +105,11 @@ struct PreferencesView: View {
                         Text(store.nextRefreshText)
                         Text("应用运行时定时刷新，唤醒后补查一次。")
                     }.font(.caption).foregroundStyle(.secondary)
+                }
+                Section("导入后自动处理") {
+                    Toggle("翻译未译内容（使用所选翻译服务）", isOn: $importTranslate)
+                    Toggle("生成章节与知识点", isOn: $importChapters)
+                    Text("在导入页打开“导入后自动处理”时，按这里选择的步骤排队执行；需要付费的步骤会先显示预计费用。").font(.caption).foregroundStyle(.secondary)
                 }
                 Section("文件位置") {
                     Button("资料位置…") { locations = true }

@@ -48,6 +48,7 @@ struct LibraryPage: View {
     @LPState private var details: LessonSelection?
     @LPState private var selectedLessons = Set<UUID>()
     @LPState private var chapterBatch = false
+    @LPState private var expandedSeries = Set<String>()
     @LPState private var fileLesson:LessonSelection?
     @LPState private var analysisLesson:LessonSelection?
     @ObservedObject var navigation:DirectoryPresentation
@@ -64,21 +65,46 @@ struct LibraryPage: View {
     } }
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            DirectorySidebar(navigation:navigation)
+            DirectorySidebar(navigation:navigation,store:store)
         } detail: {
+            if navigation.weekHome { WeekHome(store:store) } else { coursePage }
+        }.navigationTitle(navigation.weekHome ? "按周" : store.library.folders.first{$0.id==store.selectedFolder}?.name ?? store.library.courses.first{$0.id==store.selectedCourse}?.name ?? "课程库")
+        .toolbar(removing: .sidebarToggle).toolbar {
+            if !navigation.weekHome {
+                ToolbarItem {TextField("搜索课件",text:$search).textFieldStyle(.roundedBorder).frame(width:210)}
+                ToolbarItem {
+                    Menu {
+                        Button("全选本页") {selectedLessons.formUnion(items.map(\.id))}.disabled(items.isEmpty)
+                        Button("清除选择") {selectedLessons.removeAll()}.disabled(selectedLessons.isEmpty)
+                        Divider()
+                        Button("为选中的 \(selectedLessons.count) 堂生成章节…") {chapterBatch=true}.disabled(selectedLessons.isEmpty)
+                        Button("展开全部系列") {expandedSeries=Set(LessonCatalog.groups(items).filter(\.isSeries).map(\.id))}
+                        Button("收起全部系列") {expandedSeries=[]}
+                    } label: {Image(systemName:"ellipsis.circle")}.help("批量操作").accessibilityLabel("批量操作")
+                }
+            }
+            ToolbarItem {Button {store.refreshDirectory()} label:{Group {if store.scanning {ProgressView().controlSize(.small)} else {Image(systemName:"arrow.clockwise")}}.frame(width:18,height:18)}.help("刷新课程目录").accessibilityLabel("刷新课程目录").disabled(store.scanning || store.library.directoryRoot==nil)}
+            ToolbarItem(placement: .navigation) {
+                Button { visibility = visibility == .detailOnly ? .all : .detailOnly } label: { Image(systemName: "sidebar.left") }.help("显示或隐藏课程目录").accessibilityLabel("显示或隐藏课程目录")
+            }
+        }.sheet(item: $details) { LessonDetails(store: store, ids: $0.ids) }
+        .sheet(isPresented:$chapterBatch) {ChapterBatchConfirmation(store:store,ids:selectedLessons)}
+        .sheet(item:$fileLesson) {selection in DataLocations(store:store,lessonID:selection.ids.first)}
+        .sheet(item:$analysisLesson) {selection in if let id=selection.ids.first {AnalysisConfirmation(store:store,job:store.analysis,translation:store.translation,lessonID:id)}}
+    }
+    private var coursePage: some View {
             VStack(alignment: .leading, spacing: 14) {
                 if !store.scanIssues.isEmpty { DisclosureGroup("扫描遇到问题") { ScrollView { Text(store.scanIssues.joined(separator: "\n")).font(.caption).textSelection(.enabled) }.frame(maxHeight: 100) } }
                 if !store.pendingFiles.isEmpty { Button("导入课件…") { importing = true } }
                 if store.selectedCourse == nil && store.unlinkedCount > 0 { Text("在课件详情中重新关联已移动的视频。").font(.caption).foregroundStyle(.secondary) }
-                HStack {
-                    Button("全选") {selectedLessons.formUnion(items.map(\.id))}.disabled(items.isEmpty)
-                    if !selectedLessons.isEmpty {
+                if !selectedLessons.isEmpty {
+                    HStack {
                         Text("已选 \(selectedLessons.count) 堂").font(.caption)
                         Button("清除选择") {selectedLessons.removeAll()}
                         Button("生成章节…") {chapterBatch=true}
-                    }
-                    Spacer()
-                }.buttonStyle(.borderless)
+                        Spacer()
+                    }.buttonStyle(.borderless)
+                }
                 if importing {Text(store.importStatus).font(.caption).foregroundStyle(.secondary)}
             TransferStatus(transfer: store.transfer)
                 if items.isEmpty && candidates.isEmpty {
@@ -91,41 +117,93 @@ struct LibraryPage: View {
                 ForEach(candidates, id: \.self) { group in
                     HStack { VStack(alignment: .leading) { Text(group[0].deletingPathExtension().lastPathComponent); Text(group[0].deletingLastPathComponent().lastPathComponent).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("预览") { importing = true } }
                 }
-                ForEach(items) { item in
-                    HStack {
-                        Toggle("选择 " + item.title,isOn:Binding(get:{selectedLessons.contains(item.id)},set:{if $0 {selectedLessons.insert(item.id)} else {selectedLessons.remove(item.id)}})).labelsHidden().toggleStyle(.checkbox)
-                        Button {store.open(item.id)} label:{LessonThumbnail(lesson:item)}.buttonStyle(.plain).accessibilityLabel("播放 " + item.title)
-                        VStack(alignment:.leading,spacing:6) {
-                        Button { store.open(item.id) } label: { VStack(alignment: .leading, spacing: 6) { Text(item.title).font(.headline); Text("\(timeLabel(item.state.position)) / \(timeLabel(item.duration)) · \(item.mediaSources.count) 路视频").foregroundStyle(.secondary) } }.buttonStyle(.plain)
-                        if item.duration>0 {ProgressView(value:min(item.duration,item.state.position),total:item.duration).frame(width:160).tint(.accentColor)}
-                        LessonWorkStatus(store:store,lesson:item)
+                ForEach(LessonCatalog.sections(items)) { section in
+                    Section {
+                        ForEach(section.groups) { group in
+                            if group.isSeries {
+                                seriesRow(group)
+                                if expandedSeries.contains(group.id) {
+                                    ForEach(group.lessons) { lessonRow($0).padding(.leading, 30) }
+                                }
+                            } else { lessonRow(group.lessons[0]) }
                         }
-                        if navigation.missing.contains(item.id) { Button("缺失视角 · 重新关联") { details = LessonSelection(ids: [item.id]) }.font(.caption).foregroundStyle(.orange) }
-                        if store.scanConflicts[item.id] != nil { Button("归属冲突") { store.chooseDirectory(item.id) } }
-                        if let directory = item.directoryPath { Text(directory.replacingOccurrences(of: (store.library.directoryRoot ?? "") + "/", with: "")).font(.caption).foregroundStyle(.secondary) }
-                        Spacer(); Button { store.open(item.id) } label: { Image(systemName: "play.circle") }.buttonStyle(.plain)
-                    }.padding(.vertical, 8).contextMenu {
-                        Button("课件详情…") { details = LessonSelection(ids: [item.id]) }
-                        Button("添加第二路视频…") { store.addSecondVideo(item.id) }.disabled(item.mediaSources.count == 2)
-                        Button("作为主条目合并双视频…") { store.chooseMerge(primaryID: item.id) }.disabled(item.mediaSources.count != 1)
-                        Button("本课文件…") {fileLesson=LessonSelection(ids:[item.id])}
-                        LessonAnalysisMenuAction(store:store,lesson:item) {analysisLesson=LessonSelection(ids:[item.id])}
+                    } header: {
+                        Text(section.week.map { "Week \($0)" } ?? "未分周").font(.title3.weight(.semibold)).foregroundStyle(.primary).padding(.top, 6)
                     }
                 }
                 }.listStyle(.plain)
                 }
             }.padding(20)
-        }.navigationTitle(store.library.folders.first{$0.id==store.selectedFolder}?.name ?? store.library.courses.first{$0.id==store.selectedCourse}?.name ?? "课程库")
-        .toolbar(removing: .sidebarToggle).toolbar {
-            ToolbarItem {TextField("搜索课件",text:$search).textFieldStyle(.roundedBorder).frame(width:210)}
-            ToolbarItem {Button {store.refreshDirectory()} label:{Group {if store.scanning {ProgressView().controlSize(.small)} else {Image(systemName:"arrow.clockwise")}}.frame(width:18,height:18)}.help("刷新课程目录").accessibilityLabel("刷新课程目录").disabled(store.scanning || store.library.directoryRoot==nil)}
-            ToolbarItem(placement: .navigation) {
-                Button { visibility = visibility == .detailOnly ? .all : .detailOnly } label: { Image(systemName: "sidebar.left") }.help("显示或隐藏课程目录").accessibilityLabel("显示或隐藏课程目录")
+    }
+    private func lessonRow(_ item: Lecture) -> some View {
+        HStack {
+                Toggle("选择 " + item.title,isOn:Binding(get:{selectedLessons.contains(item.id)},set:{if $0 {selectedLessons.insert(item.id)} else {selectedLessons.remove(item.id)}})).labelsHidden().toggleStyle(.checkbox)
+                Button {store.open(item.id)} label:{LessonThumbnail(lesson:item)}.buttonStyle(.plain).accessibilityLabel("播放 " + item.title)
+                VStack(alignment:.leading,spacing:6) {
+                Button { store.open(item.id) } label: { VStack(alignment: .leading, spacing: 4) {
+                    Text(LessonCatalog.displayTitle(item)).font(.headline)
+                    HStack(spacing: 6) {
+                        if item.duration > 0 { Text(timeLabel(item.duration)).monospacedDigit() }
+                        if item.mediaSources.count > 1 { Image(systemName: "rectangle.on.rectangle").help("两路视频") }
+                    }.foregroundStyle(.secondary)
+                } }.buttonStyle(.plain).help(item.title + (item.directoryPath.map { "\n" + $0 } ?? ""))
+                LessonWorkStatus(store:store,lesson:item)
+                }
+                if navigation.missing.contains(item.id) { Button("缺失视角 · 重新关联") { details = LessonSelection(ids: [item.id]) }.font(.caption).foregroundStyle(.orange) }
+                if store.scanConflicts[item.id] != nil { Button("归属冲突") { store.chooseDirectory(item.id) } }
+                Spacer()
+                ProgressRing(value: LessonCatalog.isWatched(item) ? 1 : item.duration > 0 ? min(1, item.state.position / item.duration) : 0)
+                Button { store.open(item.id) } label: { Image(systemName: "play.circle") }.buttonStyle(.plain)
+            }.padding(.vertical, 8).contextMenu {
+                Button("课件详情…") { details = LessonSelection(ids: [item.id]) }
+                Button("添加第二路视频…") { store.addSecondVideo(item.id) }.disabled(item.mediaSources.count == 2)
+                Button("作为主条目合并双视频…") { store.chooseMerge(primaryID: item.id) }.disabled(item.mediaSources.count != 1)
+                Button("本课文件…") {fileLesson=LessonSelection(ids:[item.id])}
+                LessonAnalysisMenuAction(store:store,lesson:item) {analysisLesson=LessonSelection(ids:[item.id])}
             }
-        }.sheet(item: $details) { LessonDetails(store: store, ids: $0.ids) }
-        .sheet(isPresented:$chapterBatch) {ChapterBatchConfirmation(store:store,ids:selectedLessons)}
-        .sheet(item:$fileLesson) {selection in DataLocations(store:store,lessonID:selection.ids.first)}
-        .sheet(item:$analysisLesson) {selection in if let id=selection.ids.first {AnalysisConfirmation(store:store,job:store.analysis,translation:store.translation,lessonID:id)}}
+    }
+    /// Durations are known only after a part has been opened once; show the total only when all are known.
+    private func seriesLength(_ group: LessonGroup) -> String {
+        group.lessons.allSatisfy { $0.duration > 0 } ? "\(group.lessons.count) 段 · " + timeLabel(group.lessons.reduce(0) { $0 + $1.duration }) : "\(group.lessons.count) 段"
+    }
+    /// One row for a stacked series; expands to show each part.
+    private func seriesRow(_ group: LessonGroup) -> some View {
+        let open = expandedSeries.contains(group.id)
+        let color = store.courseColor(group.courseID).color
+        return HStack(spacing: 14) {
+            Button { if open { expandedSeries.remove(group.id) } else { expandedSeries.insert(group.id) } } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "chevron.right").font(.caption.weight(.bold)).rotationEffect(.degrees(open ? 90 : 0)).frame(width: 12)
+                    ZStack(alignment: .top) {
+                        RoundedRectangle(cornerRadius: 6).fill(color.opacity(0.3)).frame(width: 100, height: 14).offset(y: -7)
+                        RoundedRectangle(cornerRadius: 7).fill(color.opacity(0.55)).frame(width: 114, height: 14).offset(y: -3.5)
+                        ZStack {
+                            color.opacity(0.6)
+                            if let lead = group.next { LessonThumbnail(lesson: lead) }
+                        }.frame(width: 128, height: 72).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(alignment: .topLeading) {
+                            Text("\(group.lessons.count) 段").font(.caption2.weight(.bold)).foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 2).background(.black.opacity(0.35), in: Capsule()).padding(5)
+                        }
+                    }.padding(.top, 7)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            Text(group.title).font(.headline)
+                            if let range = group.partRange { Text(range).foregroundStyle(.secondary) }
+                        }
+                        Text(seriesLength(group)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    SeriesSegments(lessons: group.lessons, width: 22)
+                }.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(group.title + "，\(group.lessons.count) 段，已看 \(group.watchedCount)，" + (open ? "收起" : "展开"))
+            if let next = group.next {
+                Button { store.open(next.id) } label: { Label(group.partLabel(next), systemImage: "play.fill") }
+                    .buttonStyle(.bordered).buttonBorderShape(.capsule).accessibilityLabel("继续 " + group.partLabel(next))
+            }
+        }.padding(.vertical, 8)
     }
     func courseButton(_ course:Course)->some View {
         Button { store.selectedCourse=course.id;store.selectedFolder=nil } label: { Label(course.name,systemImage:"folder").lineLimit(1).help(course.name).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle()) }.buttonStyle(.plain).contextMenu {Button("在 Finder 打开"){if let path=course.directoryPath {NSWorkspace.shared.open(URL(fileURLWithPath:path))}}}
@@ -156,8 +234,10 @@ struct ImportView: View {
     @ObservedObject private var keyAvailability=KeychainAvailability.shared
     @ObservedObject var store: AppStore; @Environment(\.dismiss) var dismiss
     @LPState var rows: [ImportRow] = []; @LPState var message = ""; var initialURLs: [URL] = []; @LPState var files: [URL] = []
-    @LPState private var autoTranslate=false
-    @LPState private var autoAnalyze=false
+    @AppStorage("importAutoProcess") private var autoProcess=false
+    @LPState private var costExpanded=true
+    @AppStorage(ImportStepPlan.translateKey) private var translateStep=true
+    @AppStorage(ImportStepPlan.chaptersKey) private var chaptersStep=true
     @LPState private var analysisPreviews:[ImportAnalysisPreview]=[]
     @LPState private var previews:[ImportTranslationPreview]=[]
     @LPState private var previewError=""
@@ -166,6 +246,28 @@ struct ImportView: View {
     private var provider:TranslationService {TranslationService(rawValue:selectedService) ?? .openAI}
     private var hasKey:Bool {keyAvailability.state(provider).isAvailable}
     @LPState private var managed = false; @LPState private var importing = false
+    private var translationAvailability:ImportStepPlan.Availability {
+        if !translateStep {return .disabled}
+        if store.translation.busy {return .unavailable("已有翻译任务在运行")}
+        return credential(provider)
+    }
+    private var chaptersAvailability:ImportStepPlan.Availability {
+        if !chaptersStep {return .disabled}
+        if store.translation.busy {return .unavailable("已有翻译任务在运行")}
+        return credential(.openAI)
+    }
+    private func credential(_ service:TranslationService)->ImportStepPlan.Availability {
+        let state=keyAvailability.state(service)
+        if state.isAvailable {return .ready}
+        return .unavailable(state == .checking ? "正在检查 \(service.title) 凭据" : service.title + " 未就绪")
+    }
+    private func stepPlan(_ row:ImportRow)->ImportStepPlan {
+        let hasPreview=previews.contains {$0.rowID==row.id}
+        return ImportStepPlan.make(existing:row.existingID != nil,hasSubtitle:row.subtitle != nil && hasPreview,
+            translation:translationAvailability,chapters:chaptersAvailability)
+    }
+    private var autoTranslate:Bool {autoProcess && translationAvailability == .ready && !previews.isEmpty}
+    private var autoAnalyze:Bool {autoProcess && chaptersAvailability == .ready && !analysisPreviews.isEmpty}
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("导入预览").font(.title2)
@@ -197,18 +299,34 @@ struct ImportView: View {
                                 Text("原位置：" + source.path + "\n新位置：" + row.video.path).font(.caption).textSelection(.enabled)
                                 Text(source.contentHash == nil ? "候选依据：相同原文件名。缺少旧内容校验值，请确认这是原视频；确认后保留原进度与译文。" : "候选依据：文件名或内容校验。提交前核验内容一致，保留原进度与译文。").font(.caption).foregroundStyle(.orange)
                             } else { Text("识别为" + row.role.rawValue + "，添加至原课件；保留标题、进度、字幕和译文。角色可在课件详情调整。").font(.caption) }
+                            Label(autoProcess ? stepPlan(row).label : "只导入",systemImage:autoProcess && !stepPlan(row).steps.isEmpty ? "arrow.triangle.branch" : "tray.and.arrow.down")
+                                .font(.caption).foregroundStyle(.secondary).accessibilityLabel("导入后：" + (autoProcess ? stepPlan(row).label : "只导入"))
                         }.padding(12).background(.quaternary.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
+            }.frame(minHeight:240)
+            HStack(alignment:.firstTextBaseline) {
+                VStack(alignment:.leading,spacing:2) {
+                    Toggle("导入后自动处理",isOn:$autoProcess).toggleStyle(.switch)
+                    Text("按每行显示的步骤排队执行；已有的内容不会重做。").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("处理步骤设置…") {PreferencesNavigation.shared.requested = .library;openSettings()}.buttonStyle(.link)
             }
-            Toggle("导入成功后翻译全部未译内容（使用所选服务）",isOn:$autoTranslate).disabled(!hasKey || previews.isEmpty || store.translation.busy)
-            Toggle("导入成功后生成章节",isOn:$autoAnalyze).disabled(!keyAvailability.state(.openAI).isAvailable || analysisPreviews.isEmpty || store.translation.busy)
-            if autoAnalyze {Text(analysisPreviews.map(\.summary).joined(separator:"\n")).font(.caption)}
+            if autoTranslate || autoAnalyze {
+                DisclosureGroup("预计费用与请求明细",isExpanded:$costExpanded) {
+                    ScrollView {
+                        VStack(alignment:.leading,spacing:8) {
+                            if autoAnalyze {Text(analysisPreviews.map(\.summary).joined(separator:"\n"))}
+                            if autoTranslate {Text(previews.map(\.summary).joined(separator:"\n"));Text("确认后按导入顺序翻译；异常暂停整个队列，不自动补译。")}
+                        }.font(.caption).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
+                    }.frame(maxHeight:110)
+                }.font(.caption)
+            }
             if !keyAvailability.state(.openAI).isAvailable { credentialStatus(.openAI, purpose:provider == .openAI ? "翻译与总结":"总结") }
             if store.translation.busy {Text("已有翻译任务正在运行；本次仍可正常导入，之后再开始翻译。").font(.caption)}
             if !hasKey && provider != .openAI { credentialStatus(provider,purpose:"翻译") }
             if previews.isEmpty {Text("没有可自动翻译的新课件字幕；关联原课件不会触发翻译。").font(.caption)}
-            if autoTranslate {Text(previews.map(\.summary).joined(separator:"\n")).font(.caption);Text("确认后按导入顺序翻译；异常暂停整个队列，不自动补译。").font(.caption)}
             if !previewError.isEmpty {Text(previewError).font(.caption).foregroundStyle(.orange)}
             Text(message).foregroundStyle(.red)
             TransferStatus(transfer: store.transfer)
@@ -276,8 +394,6 @@ struct ImportView: View {
                 previews.append(ImportTranslationPreview(rowID:row.id,transcript:t,config:config,summary:"\(row.title)：\(t.cues.count) 条 · \(batches.count) 次 · \(config.providerID.title) · \(config.displayModel) · \(cost)"))
             }catch{previewError="部分字幕无法预览翻译："+error.localizedDescription}
         }
-        if analysisPreviews.isEmpty {autoAnalyze=false}
-        if previews.isEmpty {autoTranslate=false}
     }
     func importAll() {
         importing=true;message=""

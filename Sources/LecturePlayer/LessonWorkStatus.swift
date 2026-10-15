@@ -153,15 +153,26 @@ struct LessonWorkStatus:View {
         if pendingQueue && !processing.message.isEmpty {lines.append(processing.message)}
         return lines.joined(separator:"\n")
     }
+    /// Finished work shows as icons; words appear only when something is in progress or needs a decision.
+    private var translationDone:Bool {translationLabel=="翻译完成"}
+    private var chaptersDone:Bool {availability.state == .completed}
     var body:some View {
         VStack(alignment:.leading,spacing:5) {
-            if !translationLabel.isEmpty {statusRow(translationLabel,running:translationRunning,progress:record.map {Double($0.completed)/Double(max(1,$0.ids.count))})}
             HStack(spacing:10) {
-                statusRow(analysisLabel,running:analysisRunning,progress:summary?.progress)
-                if availability.state == .notGenerated || availability.state == .oldSource {
-                    Button("生成章节…") {analysisConfirmation=true}.buttonStyle(.borderless).font(.caption)
+                if translationDone {
+                    Image(systemName:"character.bubble").foregroundStyle(.secondary).help("翻译完成").accessibilityLabel("翻译完成")
+                } else if !translationLabel.isEmpty {
+                    statusRow(translationLabel,running:translationRunning,progress:record.map {Double($0.completed)/Double(max(1,$0.ids.count))})
                 }
-            }
+                if chaptersDone {
+                    Image(systemName:"list.bullet.rectangle").foregroundStyle(.secondary).help("章节已生成").accessibilityLabel("章节已生成")
+                } else if availability.state == .notGenerated || availability.state == .oldSource {
+                    Button(availability.state == .oldSource ? "重新生成章节…" : "生成章节…") {analysisConfirmation=true}.buttonStyle(.borderless).font(.caption)
+                        .help(analysisLabel)
+                } else {
+                    statusRow(analysisLabel,running:analysisRunning,progress:summary?.progress)
+                }
+            }.font(.caption)
             if translationRunning || analysisRunning || pendingQueue || (record.map {$0.state != "完成" && $0.state != "已取消"} ?? false) || summary?.taskStatus != nil || snapshot.translationErrors[lesson.id] != nil || snapshot.analysisIssue(lesson,job:analysis) != nil {
                 HStack(spacing:10) {
                     if processing.running && pendingQueue {Button("暂停") {processing.pause(store)}.disabled(processing.paused)}

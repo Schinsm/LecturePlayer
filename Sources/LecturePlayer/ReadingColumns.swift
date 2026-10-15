@@ -50,6 +50,14 @@ import SwiftUI
         value.narrowPane=pane;flush()
     }
     func selectNarrow(_ pane:Pane) {value.narrowPane=pane;flush()}
+    /// State of the 章节 / 转写 switches in the player's top bar.
+    func isOn(_ pane:Pane)->Bool {value.enabled && (pane == .chapters ? value.chapters:value.transcript)}
+    /// Turning one pane on while the reading area is hidden shows only that pane.
+    func toggle(_ pane:Pane) {
+        if isOn(pane) {hide(pane);return}
+        if !value.enabled {value.chapters = pane == .chapters;value.transcript = pane == .transcript}
+        show(pane)
+    }
     func resize(chapters:CGFloat?,transcript:CGFloat?) {
         var next=value
         if let chapters {next.chapterWidth=max(280,chapters)}
@@ -168,7 +176,6 @@ struct ReadingPaneHeader<Actions:View>:View {
             Spacer(minLength:4)
             if !following {Button("跟随",action:follow).help("回到当前播放位置")}
             actions
-            Button{columns.hide(pane)}label:{Image(systemName:"sidebar.right")}.help("收起"+title).accessibilityLabel("收起"+title)
         }.buttonStyle(.borderless).controlSize(.small).frame(height:26)
     }
 }
