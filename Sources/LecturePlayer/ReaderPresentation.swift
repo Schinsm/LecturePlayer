@@ -7,10 +7,10 @@ import Core
     @Published var searchRequest=0
     @Published var reader=ReadingState()
     @Published var scrollID:String?
-    @Published var overviewExpanded=true
     @Published var expandedTopics=Set<String>()
     @Published var chapterQuery=""
-    @Published var chapterDirectoryExpanded=false
+    @Published var sourceRequest:ReaderSourceRequest?
+    var handledSourceRequest:UUID?
     @Published var chapterFollowing=true
     @Published var chapterScrollID:String?
     func browseChapters(){if chapterFollowing {chapterFollowing=false}}

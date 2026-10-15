@@ -5,24 +5,28 @@ import Core
 import Combine
 
 struct PlayerPage: View {
-    @AppStorage("readerPaneVisible") private var readerVisible = true
+    @ObservedObject private var columns:ReadingColumns
     @ObservedObject private var shortcuts=PlaybackShortcuts.shared
     @ObservedObject var store: AppStore
+    init(store:AppStore){self.store=store;columns=store.readingColumns}
     var body: some View {
         VStack(spacing: 0) {
             PlaybackHeader(store: store)
             TransferStatus(transfer: store.transfer).padding(.horizontal, 12)
-            StudySplit(identity:store.current, rightVisible:readerVisible, toggleReader:{readerVisible.toggle()}) {
-                VideoPane(store: store, playback: store.playback)
-            } right: {
-                StudyReaderPane(store: store, playback: store.playback)
+            ReadingColumnsHost(columns:columns,identity:store.current) {
+                VideoPane(store:store,playback:store.playback)
+            } chapters: {
+                ChapterColumn(store:store)
+            } transcript: {
+                TranscriptColumn(store:store)
             }
+
         }.background(PlayerKeys(action: playbackKey)).id(store.current)
     }
     func playbackKey(_ code:UInt16,_ modifiers:NSEvent.ModifierFlags)->Bool {
         guard let command=shortcuts.resolve(code,modifiers) else{return false}
         if command == .search,let id=store.current {
-            readerVisible = true
+            columns.show(.transcript)
             store.readerPresentation.session(id).searchRequest += 1
             return true
         }
@@ -51,7 +55,7 @@ struct PlaybackHeader: View {
                 Button("添加或更换英文字幕…") {store.replaceSubtitle()}.disabled(store.translation.busy)
                 Menu("导出") {
                     Button("导出本课资料包…") {store.exportStudyPackage()}
-                    Button("导出总结与章节…") {store.exportAnalysis()}
+                    Button("导出章节…") {store.exportAnalysis()}
                     Divider()
                     ForEach(ExportKind.allCases,id: \.self){kind in Button(kind.rawValue){store.export(kind)}}
                 }
@@ -78,7 +82,7 @@ struct VideoPane: View {
         VStack(spacing: 10) {
             HStack {
                 Spacer()
-                LayoutMenu(store:store,playback:playback)
+                LayoutMenu(store:store,playback:playback,columns:store.readingColumns)
             }.frame(height: 22).buttonStyle(.borderless)
             DualVideoView(store: store, playback: playback)
                 .background(VideoEdgeAnchor())
@@ -119,7 +123,7 @@ struct VideoPane: View {
     }
     private func controlRow(compact: Bool) -> some View {
         HStack(spacing: 8) {
-            timeDisplay.frame(minWidth: compact ? 190 : 375, maxWidth: .infinity, alignment: .leading)
+            timeDisplay.frame(minWidth: compact ? 140 : 375, maxWidth: .infinity, alignment: .leading)
             transportControls
             audioControls(compact: compact).frame(minWidth: compact ? 190 : 375, maxWidth: .infinity, alignment: .trailing)
         }
@@ -159,6 +163,7 @@ struct ReaderPane: View {
     @LPState private var activeIDs: [String] = []
     @LPState private var anchorID: String?
     @LPState private var scrollRequest = 0
+    @LPState private var sourceScrollRequest = 0
     @LPState private var syncOpen = false
     private var scrollID:String? {get{session.scrollID} nonmutating set{session.scrollID=newValue}}
     @LPState private var matches: [Cue] = []
@@ -175,42 +180,40 @@ struct ReaderPane: View {
     private var cues: [Cue] { store.transcript?.cues ?? [] }
     private var offset: Double { store.lecture?.state.subtitleOffsetSeconds ?? 0 }
     private var mapper: SubtitleTimingMapper { store.lecture?.state.timingMapper ?? SubtitleTimingMapper() }
+    /// Changes on mount, when the column is shown, and when reading rows first arrive — not on translation updates.
+    var initialPositionKey: String { "\(store.current?.uuidString ?? "")|\(visible)|\(units.isEmpty)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("译文来源", selection: Binding(get:{store.transcript?.variantID ?? "openAI"},set:{store.selectTranslation($0)})) {
-                ForEach(TranslationService.allCases,id: \.rawValue) { service in
-                    Text(service.title).tag(service.rawValue)
-                }
-                if let history=store.transcript?.variants?["legacy"], !history.translations.isEmpty {Text("历史译文").tag("legacy")}
-            }.controlSize(.small).accessibilityLabel("译文来源")
-            TranslationControls(store: store, job: store.translation, query: reader.query)
-            HStack {
-                TextField("搜索", text: Binding(get: { reader.query }, set: { reader.search($0); updateSearch() }))
-                    .focused($searchFocused).textFieldStyle(.roundedBorder)
-                if !reader.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(matches.isEmpty ? "无结果" : "\(matches.count)").font(.caption).foregroundStyle(.secondary)
-                }
+            ReadingPaneHeader("转写",pane:.transcript,columns:store.readingColumns,following:reader.following,follow:{reader.resume();updateSearch();scrollRequest += 1}) {
+                if offset != 0 {Button(mapper.label){syncOpen=true}.font(.caption).help("字幕同步")}
                 Menu {
-                    Toggle("按句显示", isOn: Binding(get: {store.lecture?.readingGrouped ?? true}, set: {v in if let id = store.current {store.updateLecture(id) {$0.readingGrouped = v}}}))
-                    Toggle("隐藏自动说话人编号", isOn: $hideSpeakers)
-                    Button("字号 −") { fontSize = max(12, fontSize-1) }; Button("字号 +") { fontSize = min(32, fontSize+1) }; Slider(value: $spacing, in: 0...16) { Text("行距") } } label: { Image(systemName: "textformat.size") }.menuStyle(.borderlessButton).frame(width: 30).help("阅读设置")
+                    Picker("语言", selection:Binding(get:{store.lecture?.state.mode ?? "双语"},set:{mode in if let id=store.current {store.updateLecture(id){$0.state.mode=mode}}})) {
+                        ForEach(["双语","英文","中文"],id: \.self){Text($0)}
+                    }
+                    Picker("译文来源",selection:Binding(get:{store.transcript?.variantID ?? "openAI"},set:{store.selectTranslation($0)})) {
+                        ForEach(TranslationService.allCases,id: \.rawValue){Text($0.title).tag($0.rawValue)}
+                        if let history=store.transcript?.variants?["legacy"],!history.translations.isEmpty {Text("历史译文").tag("legacy")}
+                    }
+                    Divider()
+                    Toggle("按句显示",isOn:Binding(get:{store.lecture?.readingGrouped ?? true},set:{v in if let id=store.current {store.updateLecture(id){$0.readingGrouped=v}}}))
+                    Toggle("隐藏说话人编号",isOn:$hideSpeakers)
+                    Button("字号 −"){fontSize=max(12,fontSize-1)}
+                    Button("字号 +"){fontSize=min(32,fontSize+1)}
+                    Slider(value:$spacing,in:0...16){Text("行距")}
+                    Divider()
+                    Button("字幕同步…"){syncOpen=true}.disabled(cues.isEmpty)
+                } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize().help("转写阅读设置").accessibilityLabel("转写阅读设置")
             }
+            .popover(isPresented:$syncOpen){SubtitleSyncPopover(offset:offset,update:setOffset)}
             HStack {
-                Picker("显示", selection: Binding(get: { store.lecture?.state.mode ?? "双语" }, set: { mode in
-                    if let id = store.current { store.updateLecture(id) { $0.state.mode = mode } }
-                })) { ForEach(["双语", "英文", "中文"], id: \.self) { Text($0) } }.labelsHidden()
-                Spacer()
-                Button("跟随") { reader.resume(); updateSearch(); scrollRequest += 1 }
-                    .opacity(reader.following ? 0 : 1)
-                    .disabled(reader.following).accessibilityHidden(reader.following)
-                    .help("回到当前播放位置")
+                TextField("搜索",text:Binding(get:{reader.query},set:{reader.search($0);updateSearch()}))
+                    .focused($searchFocused).textFieldStyle(.roundedBorder)
+                if !reader.query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                    Text(matches.isEmpty ? "无结果":"\(matches.count)").font(.caption).foregroundStyle(.secondary)
+                }
             }
-            Button(mapper.label, systemImage: "clock.arrow.2.circlepath") { syncOpen.toggle() }
-                .accessibilityLabel("字幕同步：" + mapper.label)
-                .popover(isPresented: $syncOpen) {
-                    SubtitleSyncPopover(offset: offset, update: setOffset)
-                }.disabled(cues.isEmpty)
+            TranslationControls(store:store,job:store.translation,query:reader.query)
             ScrollViewReader { proxy in
                 if !reader.query.isEmpty {
                     HStack { Button { jumpMatch(-1, proxy) } label: { Image(systemName: "chevron.up") }.help("上一匹配")
@@ -230,21 +233,25 @@ struct ReaderPane: View {
                     if reader.following && !reduceMotion {withAnimation(.easeOut(duration:0.18)){proxy.scrollTo(id,anchor:UnitPoint(x:0.5,y:0.35))}}
                     else {proxy.scrollTo(id,anchor:UnitPoint(x:0.5,y:0.35))}
                 }}
-                    .onChange(of:sourceRequest) {_,request in if visible,let request {reader.browse();proxy.scrollTo(unitID(request.cueID),anchor:.center)}}.background(ScrollIntent(enabled:visible,onManual: { reader.browse() }))
+                    .onChange(of:sourceScrollRequest) {_,_ in if visible,let id=scrollID {proxy.scrollTo(id,anchor:.center)}}
+                    .background(ScrollIntent(enabled:visible,onManual: { reader.browse() }))
                     .onChange(of: anchorID) { _, id in if visible, reader.following, let id { scrollID = unitID(id) } }
                     .onChange(of: scrollRequest) { _, _ in if visible,let id = anchorID { scrollID = unitID(id); proxy.scrollTo(unitID(id),anchor:.center) } }
-                    .task {
+                    .task(id: initialPositionKey) {
                         // Let the split view establish the final text width before initial positioning.
                         try? await Task.sleep(for: .milliseconds(200))
-                        if !Task.isCancelled, visible, reader.following, let id = anchorID { scrollID = unitID(id) }
+                        guard !Task.isCancelled, visible, !units.isEmpty else { return }
+                        // scrollID lives in the lesson session and survives re-entry; this ScrollView
+                        // is new and starts at the top, so scroll explicitly instead of waiting for a change.
+                        if reader.following { scrollRequest += 1 }
+                        else if scrollID != nil { sourceScrollRequest += 1 }
                     }
             }
         }.padding(12)
             .onChange(of:session.searchRequest){_,_ in focusRequestedSearch()}
             .onAppear { rebuild() }
             .onChange(of: sourceRequest) { _, request in
-                guard visible,let request, cues.contains(where: { $0.id == request.cueID }) else { return }
-                reader.browse(); scrollID = unitID(request.cueID)
+                handleSourceRequest()
             }
             .onChange(of: store.preparedReading?.revision) { _, _ in rebuild() }
             .onChange(of: store.transcript?.translations) { _, _ in if visible {updateSearch()} }
@@ -252,9 +259,13 @@ struct ReaderPane: View {
             .onChange(of: hideSpeakers) {_,_ in updateSearch()}
             .onChange(of: offset) { _, _ in updateActive(playback.position); if visible,reader.following {scrollRequest += 1} }
             .onReceive(playback.clock.$snapshot.map(\.seconds)) { if visible {updateActive($0)} }
-            .onChange(of:visible){_,value in if value {updateActive(playback.position);updateSearch();focusRequestedSearch()}}
+            .onChange(of:visible){_,value in if value {updateActive(playback.position);updateSearch();focusRequestedSearch();handleSourceRequest()}}
     }
 
+    private func handleSourceRequest() {
+        guard visible,let request=sourceRequest,request.id != session.handledSourceRequest,cues.contains(where:{$0.id==request.cueID}) else{return}
+        session.handledSourceRequest=request.id;reader.browse();scrollID=unitID(request.cueID);sourceScrollRequest += 1
+    }
     private func focusRequestedSearch() {
         guard visible,session.searchRequest != handledSearchRequest else{return}
         handledSearchRequest=session.searchRequest;searchFocused=true;reader.browse()

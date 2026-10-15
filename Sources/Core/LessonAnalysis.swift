@@ -14,7 +14,7 @@ public struct AnalysisConfig: Codable, Equatable, Sendable {
     public func validate() throws {
         let descriptor = try translationConfig.descriptor()
         try resolvedModels?.validate()
-        guard (1...3).contains(protocolVersion ?? 1), outputLimit <= descriptor.maximumOutputTokens else {throw Failure("总结协议或输出上限不受支持")}
+        guard (1...4).contains(protocolVersion ?? 1), outputLimit <= descriptor.maximumOutputTokens else {throw Failure("总结协议或输出上限不受支持")}
         guard (1...12000).contains(outputLimit) else { throw Failure("总结输出上限无效") }
     }
 }
@@ -124,6 +124,13 @@ public struct AnalysisTaskState: Codable, Equatable, Sendable {
         }
         next.config.protocolVersion=3;try next.validate();return next
     }
+    /// An explicit continuation preserves accepted blocks and the frozen model settings.
+    public func chaptersOnlyContinuation() throws -> Self {
+        var next = try compactContinuation()
+        next.config.protocolVersion = 4
+        try next.validate()
+        return next
+    }
     public func validate() throws {
         try config.validate(); try plan.validate()
         guard Set(completedChunks.keys).isSubset(of:Set(plan.chunks.map(\.id))), Set(proposedChapters.map(\.id)).count==proposedChapters.count else { throw Failure("总结进度包含未知分块") }
@@ -164,9 +171,10 @@ public struct LessonAnalysis: Codable, Equatable, Sendable {
     public var attempts: [AnalysisAttempt] = []
     public init(lessonID: UUID, sourceVersion: String) { self.lessonID=lessonID; self.sourceVersion=sourceVersion }
     public func validate(transcript: Transcript? = nil) throws {
-        guard (schema==1 || schema==2), !sourceVersion.isEmpty, Set(attempts.map(\.id)).count==attempts.count else { throw Failure("课程总结格式无效或来自更新版本") }
+        guard (1...3).contains(schema), !sourceVersion.isEmpty, Set(attempts.map(\.id)).count==attempts.count else { throw Failure("课程总结格式无效或来自更新版本") }
+        if task?.config.protocolVersion == 4 || completedConfig?.protocolVersion == 4 { guard schema >= 3 else { throw Failure("章节协议需要记录格式 3") } }
         if let task { guard task.plan.sourceVersion==sourceVersion else { throw Failure("总结任务字幕版本不匹配") }; try task.validate() }
-        if let completed { try AnalysisValidation.document(completed); guard completedConfig != nil, completedAt != nil else { throw Failure("总结缺少生成信息") } }
+        if let completed { try AnalysisValidation.document(completed, protocolVersion: completedConfig?.protocolVersion ?? 1); try completedConfig?.validate(); guard completedConfig != nil, completedAt != nil else { throw Failure("总结缺少生成信息") } }
         if let transcript {
             try transcript.validate()
             guard transcript.version==sourceVersion else { throw Failure("总结对应旧字幕，不能用于当前字幕跳转") }
@@ -191,15 +199,18 @@ public enum AnalysisValidation {
         guard next==cueIDs.count else { throw Failure("章节遗漏字幕，本组尚未保存") }
     }
     public static func block(_ chapters: [AnalysisChapter], chunk: AnalysisChunk) throws { try coverage(chapters,cueIDs:chunk.targets.map(\.id)) }
-    public static func document(_ document: AnalysisDocument) throws {
+    public static func document(_ document: AnalysisDocument, protocolVersion: Int = 1) throws {
+        guard (1...4).contains(protocolVersion) else { throw Failure("不支持的章节协议") }
+        if protocolVersion == 4 {guard document.overview.isEmpty, document.topics != nil else {throw Failure("章节结果格式无效")}}
         if document.topics != nil {try HierarchicalAnalysis.validateStructure(document)}
         let ids=Set(document.chapters.map(\.id))
-        guard !ids.isEmpty, ids.count==document.chapters.count, (1...8).contains(document.overview.count),
+        guard !ids.isEmpty, ids.count==document.chapters.count, (protocolVersion == 4 ? document.overview.isEmpty : (1...8).contains(document.overview.count)),
               document.chapters.allSatisfy({nonempty($0.id) && nonempty($0.startCueID) && nonempty($0.endCueID) && nonempty($0.title) && ($0.memberCueIDs == nil ? 2...3 : 1...3).contains($0.points.count) && $0.points.allSatisfy(nonempty)}),
               document.overview.allSatisfy({nonempty($0.text) && ids.contains($0.chapterID)}) else { throw Failure("总结内容或章节引用无效") }
     }
-    public static func synthesis(_ document: AnalysisDocument, proposed: [AnalysisChapter]) throws {
-        try self.document(document)
+    public static func synthesis(_ document: AnalysisDocument, proposed: [AnalysisChapter], protocolVersion: Int = 1) throws {
+        try self.document(document, protocolVersion: protocolVersion)
+        if protocolVersion == 4 { guard document.chapters == proposed else { throw Failure("整理不能改写已保存知识点") } }
         if document.topics != nil {try HierarchicalAnalysis.validate(document, proposed: proposed); return}
         guard !proposed.isEmpty, Set(proposed.map(\.startCueID)).count==proposed.count, Set(proposed.map(\.endCueID)).count==proposed.count else { throw Failure("待合并章节范围无效") }
         var next=0
@@ -269,9 +280,7 @@ public enum AnalysisMarkdown {
         try record.validate(transcript:transcript)
         guard let document=record.completed else { throw Failure("课程总结尚未完成") }
         let cues=Dictionary(uniqueKeysWithValues:transcript.cues.map{($0.id,$0)}), mapper=SubtitleTimingMapper(offset:offset)
-        var lines=["# \(title) — 总结与章节","", "根据英文字幕生成；未分析视频画面。请结合原文核对。", "字幕版本：\(record.sourceVersion)", "播放校准：\(String(format:"%+.3f",offset)) 秒（原字幕时间不变）", "", "## 核心要点", ""]
-        let chapterIndices=Dictionary(uniqueKeysWithValues:document.chapters.enumerated().map{($0.element.id,$0.offset+1)})
-        for point in document.overview { lines.append("- \(point.text)（章节 \(chapterIndices[point.chapterID]!)）") }
+        var lines=["# \(title) — 章节", "", "字幕版本：\(record.sourceVersion)", "播放校准：\(String(format:"%+.3f",offset)) 秒", ""]
         if let topics = document.topics {
             for topic in topics {
                 lines += ["", "## " + topic.title, topic.overview, ""]

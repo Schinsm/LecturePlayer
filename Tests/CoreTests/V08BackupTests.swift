@@ -53,7 +53,7 @@ import Testing
         #expect(throws: (any Error).self) { try bad.validate() }
         bad = backup; bad.analyses = ["../unsafe": valid]
         #expect(throws: (any Error).self) { try bad.validate() }
-        bad = backup; bad.schema = 7
+        bad = backup; bad.schema = 8
         #expect(throws: (any Error).self) { try bad.validate() }
     }
 

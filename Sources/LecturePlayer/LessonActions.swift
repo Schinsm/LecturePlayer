@@ -42,7 +42,7 @@ extension AppStore {
         playback.persist()
         guard let item = lecture else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
-        panel.message = "资料包包含英文字幕、中文译文、总结与章节、书签和学习进度；视频可选。将创建新的 .lecturestudy 文件夹，不覆盖已有资料。"
+        panel.message = "资料包包含英文字幕、中文译文、章节、书签和学习进度；视频可选。将创建新的 .lecturestudy 文件夹，不覆盖已有资料。"
         let include = NSButton(checkboxWithTitle: "包含视频（可能较大）", target: nil, action: nil); include.state = .off; panel.accessoryView = include
         guard panel.runModal() == .OK, let parent = panel.url else { return }
         let destination = parent.appendingPathComponent(item.displayTitle.replacingOccurrences(of: "/", with: "-") + "-\(Int(Date().timeIntervalSince1970)).lecturestudy")

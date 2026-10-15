@@ -4,20 +4,22 @@
 
 A native macOS lecture player with synchronized dual video, bilingual captions, searchable transcripts, and chapters.
 
-**[下载 0.8.10](https://github.com/Schinsm/LecturePlayer/releases/tag/v0.8.10)** · [全部版本](https://github.com/Schinsm/LecturePlayer/releases)
+**0.8.11（构建 32）** · [已发布版本](https://github.com/Schinsm/LecturePlayer/releases)
+
+本版包含黑屏更新路径修复和三栏阅读界面，已完成实际界面验收。
 
 ## 功能
 
 - 双视频同步播放，可切换布局、拖动和缩放画中画。
 - 中英字幕、按句阅读、全文搜索和时间校准。
-- 章节与实时转写同屏显示，分别跟随播放；支持完整目录、当前知识点定位、翻译与总结。
+- 视频、章节、转写三栏并排，可分别收起和调整宽度；章节与转写独立跟随播放。
 - 课程播放列表，以及跨视频记忆的字幕设置。
 
 ## 安装
 
 需要 **Apple Silicon Mac、macOS 14 或更新版本**。
 
-下载 `LecturePlayer-0.8.10-macOS-arm64.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
+打开 `LecturePlayer-0.8.11.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
 
 应用尚未完成 Apple 公证。首次打开如被系统拦截，可在“系统设置 → 隐私与安全性”中允许打开。同名 `.sha256` 文件用于核对下载完整性。
 
@@ -25,9 +27,9 @@ A native macOS lecture player with synchronized dual video, bilingual captions, 
 
 1. 选择课程视频和字幕所在的目录，确认导入。
 2. 打开课件，使用字幕、转写搜索、章节和播放列表。
-3. 需要翻译或总结时，在设置中配置服务，再确认任务。
+3. 需要翻译或章节生成时，在设置中配置服务，再确认任务。
 
-学习记录保存在本机。启用外部翻译或总结服务时，相关文本会发送到所选服务，费用取决于所选服务。
+学习记录保存在本机。启用外部翻译或章节生成服务时，相关文本会发送到所选服务，费用取决于所选服务。
 
 ## 构建与测试
 

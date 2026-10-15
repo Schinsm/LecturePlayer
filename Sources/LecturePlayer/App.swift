@@ -8,13 +8,12 @@ typealias LPState<Value> = SwiftUI.State<Value>
 @main struct LecturePlayerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store = AppStore()
-    @AppStorage("readerPaneVisible") private var readerVisible=true
     var body: some Scene {
-        Window("Lecture Player", id: "main") { RootView(store: store).onAppear{delegate.drainBeforeTerminate={await store.drainGeneration()};delegate.beforeTerminate={store.pipPreferences.flush();store.captions.flush();store.readerPresentation.flush();store.playback.persist();try store.repository?.commits.flush()}}.frame(minWidth: 900, minHeight: 560).background(WindowPersistence()).onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.pipPreferences.flush();store.captions.flush(); store.playback.persist(); store.flushMetadata(); store.analysis.cancel();store.translation.cancel();store.processing.worker?.cancel() }.onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in store.pipPreferences.flush();store.captions.flush(); store.playback.persist(); store.flushMetadata() } }.defaultSize(width:1200,height:780)
+        Window("Lecture Player", id: "main") { RootView(store: store).onAppear{delegate.drainBeforeTerminate={await store.drainGeneration()};delegate.beforeTerminate={store.readingColumns.flush();store.pipPreferences.flush();store.captions.flush();store.readerPresentation.flush();store.playback.persist();try store.repository?.commits.flush()}}.frame(minWidth: 900, minHeight: 560).background(WindowPersistence()).onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.readingColumns.flush();store.pipPreferences.flush();store.captions.flush(); store.playback.persist(); store.flushMetadata(); store.analysis.cancel();store.translation.cancel();store.processing.worker?.cancel() }.onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in store.readingColumns.flush();store.pipPreferences.flush();store.captions.flush(); store.playback.persist(); store.flushMetadata() } }.defaultSize(width:1200,height:780)
         Settings { PreferencesView(store:store) }
         .commands { CommandGroup(after:.newItem) {Button("在 Finder 打开当前目录"){store.openSelectedDirectory()}.disabled(store.library.directoryRoot==nil)}
             CommandGroup(after:.sidebar) {
-                Button(readerVisible ? "隐藏转写与章节":"显示转写与章节") {readerVisible.toggle()}.disabled(store.current==nil)
+                ReaderColumnsMenu(columns:store.readingColumns).disabled(store.current==nil)
             }
         }
     }
@@ -76,7 +75,7 @@ struct LibraryPage: View {
                     if !selectedLessons.isEmpty {
                         Text("已选 \(selectedLessons.count) 堂").font(.caption)
                         Button("清除选择") {selectedLessons.removeAll()}
-                        Button("生成总结与章节…") {chapterBatch=true}
+                        Button("生成章节…") {chapterBatch=true}
                     }
                     Spacer()
                 }.buttonStyle(.borderless)
@@ -203,7 +202,7 @@ struct ImportView: View {
                 }
             }
             Toggle("导入成功后翻译全部未译内容（使用所选服务）",isOn:$autoTranslate).disabled(!hasKey || previews.isEmpty || store.translation.busy)
-            Toggle("导入成功后生成总结与章节",isOn:$autoAnalyze).disabled(!keyAvailability.state(.openAI).isAvailable || analysisPreviews.isEmpty || store.translation.busy)
+            Toggle("导入成功后生成章节",isOn:$autoAnalyze).disabled(!keyAvailability.state(.openAI).isAvailable || analysisPreviews.isEmpty || store.translation.busy)
             if autoAnalyze {Text(analysisPreviews.map(\.summary).joined(separator:"\n")).font(.caption)}
             if !keyAvailability.state(.openAI).isAvailable { credentialStatus(.openAI, purpose:provider == .openAI ? "翻译与总结":"总结") }
             if store.translation.busy {Text("已有翻译任务正在运行；本次仍可正常导入，之后再开始翻译。").font(.caption)}
@@ -432,5 +431,14 @@ struct TranslationControls:View {
         }
         .sheet(isPresented:$confirming) {if let id=store.current {TranslationConfirmation(store:store,job:job,lessonID:id,query:query)}}
         .popover(isPresented:$showingDetails) {ScrollView {Text(details).font(.caption).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading).padding(14)}.frame(width:320,height:180)}
+    }
+}
+
+struct ReaderColumnsMenu:View {
+    @ObservedObject var columns:ReadingColumns
+    var body:some View {
+        Button(columns.value.enabled ? "隐藏转写与章节":"显示转写与章节"){columns.toggleAll()}
+        Button("显示章节"){columns.show(.chapters)}
+        Button("显示转写"){columns.show(.transcript)}
     }
 }

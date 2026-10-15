@@ -159,7 +159,7 @@ struct LessonWorkStatus:View {
             HStack(spacing:10) {
                 statusRow(analysisLabel,running:analysisRunning,progress:summary?.progress)
                 if availability.state == .notGenerated || availability.state == .oldSource {
-                    Button("生成总结…") {analysisConfirmation=true}.buttonStyle(.borderless).font(.caption)
+                    Button("生成章节…") {analysisConfirmation=true}.buttonStyle(.borderless).font(.caption)
                 }
             }
             if translationRunning || analysisRunning || pendingQueue || (record.map {$0.state != "完成" && $0.state != "已取消"} ?? false) || summary?.taskStatus != nil || snapshot.translationErrors[lesson.id] != nil || snapshot.analysisIssue(lesson,job:analysis) != nil {
@@ -173,7 +173,7 @@ struct LessonWorkStatus:View {
                             Button("继续翻译…") {store.updateLecture(lesson.id){$0.selectedTranslationVariantID=record.variantID};translationConfirmation=true}.disabled(translation.busy || analysis.running)
                             Button("取消翻译") {translation.cancelQueued(lesson.id,store:store)}
                         }
-                        if summary?.taskStatus != nil {Button("继续总结…") {analysisConfirmation=true}.disabled(translation.busy || analysis.running)}
+                        if summary?.taskStatus != nil {Button("继续生成章节…") {analysisConfirmation=true}.disabled(translation.busy || analysis.running)}
                     }
                     if !detailText.isEmpty {Button("详情") {showingDetails.toggle()}}
                 }.buttonStyle(.borderless).font(.caption)

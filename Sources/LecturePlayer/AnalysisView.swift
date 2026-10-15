@@ -41,31 +41,12 @@ struct AnalysisPanel: View {
     private var buttonTitle: String {
         if thisRunning { return job.pauseRequested ? "正在收尾…" : "暂停" }
         if let pending { return pending.status == .failed ? "重试并继续…" : "继续生成…" }
-        return record?.completed != nil && !stale ? (record?.completed?.topics == nil ? "生成细化目录…" : "重新生成…") : "生成总结与章节…"
+        return record?.completed != nil && !stale ? "重新生成章节…" : "生成章节…"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing:8) {
-                Text("章节").font(.headline)
-                if !session.chapterFollowing {
-                    Button("跟随"){session.followChapters();locateRequest += 1}
-                        .disabled(currentChapterID == nil || stale).help("跟随当前章节")
-                }
-                Spacer()
-                Button(session.chapterDirectoryExpanded ? "收起目录":"完整目录") {
-                    session.chapterDirectoryExpanded.toggle()
-                    if session.chapterDirectoryExpanded && session.chapterFollowing {locateRequest += 1}
-                }.accessibilityLabel(session.chapterDirectoryExpanded ? "收起完整目录":"展开完整目录")
-                if !session.chapterDirectoryExpanded { chapterActions }
-            }.controlSize(.small)
-            if session.chapterDirectoryExpanded {
-                TextField("搜索章节", text: $session.chapterQuery)
-                    .textFieldStyle(.roundedBorder).accessibilityLabel("搜索课程章节")
-                ViewThatFits(in:.horizontal) {
-                    chapterToolbar(expandedControls:true)
-                    chapterToolbar(expandedControls:false)
-                }
-            }
+            ReadingPaneHeader("章节",pane:.chapters,columns:store.readingColumns,following:session.chapterFollowing,follow:{session.followChapters();followCurrentChapter()}) {chapterActions}
+            TextField("搜索",text:$session.chapterQuery).textFieldStyle(.roundedBorder).accessibilityLabel("搜索章节")
             if let id = lesson?.id, let error = job.loadErrors[id] {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 Button("重新读取") { Task { await job.load(store: store, lessonID: id) } }
@@ -76,88 +57,69 @@ struct AnalysisPanel: View {
             } else {
                 if thisRunning {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(job.status(for:lesson?.id)).font(.caption) }
-                } else if let pending,session.chapterDirectoryExpanded {
+                } else if let pending {
                     pendingDetails(pending)
                 }
                 if stale {
-                    Label("对应旧字幕，时间跳转已停用。可重新生成当前字幕的总结。", systemImage: "exclamationmark.circle")
+                    Label("对应旧字幕，时间跳转已停用。可重新生成当前字幕的章节。", systemImage: "exclamationmark.circle")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if let document = record?.completed {
                     documentContent(document)
                 } else if !thisRunning {
-                    Text("未生成总结").font(.callout).foregroundStyle(.secondary)
+                    Text("未生成章节").font(.callout).foregroundStyle(.secondary)
                     Button(buttonTitle) {confirming=true}.buttonStyle(.borderedProminent)
                         .frame(maxWidth:.infinity)
                 } else { Spacer() }
             }
-        }.padding(12)
-        .task(id: "\(lesson?.id.uuidString ?? "")-\(version)") {
-            if let id = lesson?.id { await job.load(store: store, lessonID: id); refreshHistoricalSource(); rebuildLookup() }
+        }.padding(12).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        .task(id: "\(lesson?.id.uuidString ?? "")-\(version)-\(visible)") {
+            if visible,let id = lesson?.id { await job.load(store: store, lessonID: id); refreshHistoricalSource(); rebuildLookup() }
         }
         .onChange(of: job.revision) { _, _ in refreshHistoricalSource(); rebuildLookup(); expandCurrentOnce() }
         .onAppear {rebuildLookup(); expandCurrentOnce()}
         .onChange(of:visible) {_,value in if value {refreshSearch();updateCurrent(playback.position);expandCurrentOnce();followCurrentChapter()}}
         .onChange(of:chapterQuery){_,value in if !value.isEmpty {session.browseChapters()};refreshSearch()}
         .onChange(of:currentChapterID){_,_ in followCurrentChapter()}
-        .onChange(of:session.chapterDirectoryExpanded){_,expanded in if expanded {followCurrentChapter()}}
         .onReceive(playback.clock.$snapshot.map(\.seconds)) {value in if visible {updateCurrent(value)}}
         .onChange(of:lesson?.state.offset) {_,_ in updateCurrent(playback.position)}
         .sheet(isPresented: $confirming) {
             if let id = lesson?.id { AnalysisConfirmation(store: store, job: job, translation: translation, lessonID: id) }
         }
     }
-    @ViewBuilder private func documentContent(_ document:AnalysisDocument)->some View {
-                    if session.chapterDirectoryExpanded {
-                    ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 18) {
-                            DisclosureGroup("整课总结", isExpanded: $session.overviewExpanded) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    ForEach(Array(document.overview.enumerated()), id: \.offset) { _, point in
-                                        Button {
-                                            if let chapter = document.chapters.first(where: { $0.id == point.chapterID }) { seek(chapter) }
-                                        } label: {
-                                            HStack(alignment: .top, spacing: 8) {
-                                                Image(systemName: "smallcircle.filled.circle").font(.caption2).padding(.top, 4)
-                                                Text(point.text).frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading)
-                                            }.contentShape(Rectangle())
-                                        }.buttonStyle(.plain).disabled(stale).help("跳到相关章节")
-                                    }
-                                }.padding(.top, 10)
-                            }.font(.body)
-                            Divider()
-                            if document.topics != nil {
-                                ForEach(filteredTopics) { topic in topicRow(topic) }
-                            } else {
-                                Text("旧版目录；生成细化目录后可定位到知识点。").font(.caption).foregroundStyle(.secondary)
-                                ForEach(filteredChapters, id: \.id) {chapter in chapterRow(chapter)}
-                            }
-                            if let record {
-                                Divider()
-                                Button("导出总结与章节…") { store.exportAnalysis() }.disabled(stale)
-                                Text("根据英文字幕生成，可能遗漏图表信息，请结合原文核对。")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if let date = record.completedAt {
-                                    Text("\(record.completedConfig?.model ?? "OpenAI") · \(date.formatted(date: .abbreviated, time: .shortened))")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                        }.padding(.trailing, 8).scrollTargetLayout()
-                    }.scrollPosition(id:$session.chapterScrollID)
-                    .background(ScrollIntent(enabled:visible,onManual:{session.browseChapters()}))
-                    .onChange(of:locateRequest) {_,request in
-                        guard visible,session.chapterFollowing,let chapter=currentChapterID,!stale else{return}
-                        if let topic=topicByChapter[chapter] {expandedTopics.insert(topic)}
-                        Task { @MainActor in
-                            await Task.yield()
-                            guard visible,session.chapterFollowing,session.chapterDirectoryExpanded,
-                                  request == locateRequest,chapter == currentChapterID else{return}
-                            proxy.scrollTo("chapter:"+chapter,anchor:.center)
-                        }
-                    }
-                    }
-                    } else { ScrollView { compactChapter(document).frame(maxWidth:.infinity,alignment:.leading) }.scrollIndicators(.hidden) }
+    private func documentContent(_ document:AnalysisDocument)->some View {
+        ScrollViewReader {proxy in
+            ScrollView {
+                LazyVStack(alignment:.leading,spacing:16) {
+                    if document.topics != nil {ForEach(filteredTopics){topic in topicRow(topic)}}
+                    else {ForEach(filteredChapters){chapter in chapterRow(chapter)}}
+                    if !chapterQuery.isEmpty && filteredTopics.isEmpty && filteredChapters.isEmpty {Text("无结果").foregroundStyle(.secondary)}
+                }.padding(.trailing,8).scrollTargetLayout()
+            }.scrollPosition(id:$session.chapterScrollID)
+            .background(ScrollIntent(enabled:visible,onManual:{session.browseChapters()}))
+            .onChange(of:locateRequest) {_,request in
+                guard visible,session.chapterFollowing,let chapter=currentChapterID,!stale else{return}
+                let topic=topicByChapter[chapter]
+                if let topic {expandedTopics.insert(topic)}
+                Task { @MainActor in
+                    await Task.yield()
+                    guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
+                    // A lazy row far down the list is not built yet, so its explicit "topic:"/"chapter:"
+                    // id does not exist. Only the ForEach identity is known up front: scroll to that
+                    // row first, then refine to the chapter once it has been built.
+                    proxy.scrollTo(topic ?? chapter,anchor:.top)
+                    try? await Task.sleep(for:.milliseconds(80))
+                    guard visible,session.chapterFollowing,request==locateRequest,chapter==currentChapterID else{return}
+                    proxy.scrollTo("chapter:"+chapter,anchor:UnitPoint(x:0.5,y:0.3))
+                }
+            }
+            .task {
+                // Same as the transcript: scrolling before the split view sizes this column is a no-op.
+                try? await Task.sleep(for:.milliseconds(200))
+                guard !Task.isCancelled,visible else{return}
+                if session.chapterFollowing {followCurrentChapter()} else if let id=session.chapterScrollID {proxy.scrollTo(id,anchor:.top)}
+            }
+        }
     }
     private func pendingDetails(_ pending:AnalysisTaskState)->some View {
         VStack(alignment:.leading,spacing:6) {
@@ -176,59 +138,18 @@ struct AnalysisPanel: View {
     }
     private var chapterActions:some View {
         Menu {
+            Button("展开全部"){session.browseChapters();expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
+            Button("收起全部"){session.browseChapters();expandedTopics=[]}
+            Divider()
             Button(buttonTitle){if thisRunning {job.pause()} else {confirming=true}}
                 .disabled(unavailable || (thisRunning ? job.pauseRequested : !translation.acceptsQueuedWork))
-            if record?.completed != nil {Button("导出总结与章节…"){store.exportAnalysis()}.disabled(stale)}
-        } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize().help("章节操作")
-    }
-    @ViewBuilder private func compactChapter(_ document:AnalysisDocument)->some View {
-        if let id=currentChapterID,let chapter=document.chapters.first(where:{$0.id==id}) {
-            VStack(alignment:.leading,spacing:6) {
-                if let topicID=topicByChapter[id],let topic=document.topics?.first(where:{$0.id==topicID}) {
-                    Text(topic.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Button {seek(chapter)} label: {
-                    HStack(alignment:.top) {
-                        RoundedRectangle(cornerRadius:2).fill(Color.accentColor).frame(width:3)
-                        VStack(alignment:.leading,spacing:4) {
-                            Text(chapter.title).font(.headline).lineLimit(2)
-                            Text(rangeLabel(chapter)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            if let point=chapter.points.first {Text(point).font(.callout).foregroundStyle(.secondary).lineLimit(2)}
-                        }.frame(maxWidth:.infinity,alignment:.leading)
-                    }.fixedSize(horizontal:false,vertical:true).contentShape(Rectangle())
-                }.buttonStyle(.plain).disabled(stale)
-                Button("查看对应原文"){onViewSource(chapter.startCueID)}.buttonStyle(.borderless).font(.caption)
-            }
-        } else {
-            Text(stale ? "章节对应旧字幕":"尚未进入章节").font(.callout).foregroundStyle(.secondary)
-            Spacer(minLength:0)
-        }
+            if record?.completed != nil {Button("导出章节…"){store.exportAnalysis()}.disabled(stale)}
+        } label:{Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize().help("章节操作").accessibilityLabel("章节操作")
     }
     private func followCurrentChapter() {
-        guard visible,session.chapterFollowing,session.chapterDirectoryExpanded,chapterQuery.isEmpty,!stale,let id=currentChapterID else{return}
+        guard visible,session.chapterFollowing,chapterQuery.isEmpty,!stale,let id=currentChapterID else{return}
         if let topic=topicByChapter[id] {expandedTopics.insert(topic)}
         locateRequest += 1
-    }
-    private func chapterToolbar(expandedControls:Bool) -> some View {
-        HStack(spacing:8) {
-            Button("定位当前"){session.followChapters();locateRequest += 1}
-                .disabled(currentChapterID==nil || stale).help("清除搜索并定位当前知识点，保留播放状态")
-            Spacer(minLength:0)
-            if expandedControls,record?.completed?.topics != nil {
-                Button("展开全部"){session.browseChapters();expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
-                Button("收起全部"){session.browseChapters();expandedTopics=[]}
-            }
-            Menu {
-                if !expandedControls,record?.completed?.topics != nil {
-                    Button("展开全部"){session.browseChapters();expandedTopics=Set(record?.completed?.topics?.map(\.id) ?? [])}
-                    Button("收起全部"){session.browseChapters();expandedTopics=[]}
-                    Divider()
-                }
-                Button(buttonTitle) {if thisRunning {job.pause()} else {confirming=true}}
-                    .disabled(unavailable || (thisRunning ? job.pauseRequested : !translation.acceptsQueuedWork))
-            } label: {Image(systemName:"ellipsis")}.menuStyle(.borderlessButton).fixedSize()
-                .help("章节操作").accessibilityLabel("章节操作")
-        }.controlSize(.small)
     }
     private func chapterMatches(_ chapter: AnalysisChapter) -> Bool {
         chapterQuery.isEmpty || ([chapter.title] + chapter.points).joined(separator:" ").localizedCaseInsensitiveContains(chapterQuery)
@@ -343,10 +264,9 @@ struct AnalysisConfirmation: View {
     @LPState private var message = ""
     @LPState private var resuming = false
     @LPState private var hadCompleted = false
-    @LPState private var compactContinuation = false
     @LPState private var files=false
     private var config: AnalysisConfig {
-        var value=AnalysisConfig(model:model,effort:effort);value.protocolVersion=3
+        var value=AnalysisConfig(model:model,effort:effort);value.protocolVersion=4
         value.resolvedModels=ResolvedModelPlan.analysis(value,automatic:automatic)
         return value.forStage("analysis")
     }
@@ -354,18 +274,18 @@ struct AnalysisConfirmation: View {
     private var busy: Bool { !translation.acceptsQueuedWork }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(resuming ? "继续生成总结与章节" : hadCompleted ? "重新生成总结与章节" : "生成总结与章节").font(.title2.bold())
+            Text(resuming ? "继续生成章节" : hadCompleted ? "重新生成章节" : "生成章节").font(.title2.bold())
             Text(lesson?.displayTitle ?? "课件").foregroundStyle(.secondary)
             Text("根据英文字幕分析，以中文总结并保留英文术语。不会上传视频或音频。")
                 .font(.callout)
             if let proposed {
                 if resuming {
-                    LabeledContent("总结模型", value: TranslationModelCatalog.find(proposed.config.model)?.displayName ?? proposed.config.model)
+                    LabeledContent("章节模型", value: TranslationModelCatalog.find(proposed.config.model)?.displayName ?? proposed.config.model)
                     Text("沿用上次确认的模型与字幕范围，已完成的分析不会重新发送。")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Toggle("自动·均衡", isOn: $automatic)
-                    Picker("总结模型", selection: $model) {
+                    Picker("章节模型", selection: $model) {
                         if TranslationModelCatalog.find(model) == nil { Text(model + "（需检查）").tag(model) }
                         ForEach(TranslationModelCatalog.models) { Text($0.displayName).tag($0.id) }
                     }.disabled(automatic)
@@ -375,9 +295,8 @@ struct AnalysisConfirmation: View {
                         }.disabled(automatic)
                     }
                 }
-                if resuming && (proposed.config.protocolVersion ?? 1) < 3 {
-                    Toggle("使用精简方式继续…",isOn:$compactContinuation)
-                    Text("复用已完成分块，仅精简最后整理的返回内容；模型、推理程度与输出上限保持原配置。点击确认后生效。").font(.caption).foregroundStyle(.secondary)
+                if resuming && (proposed.config.protocolVersion ?? 1) < 4 {
+                    Text("继续时复用已完成知识点，只整理章节，不再生成整课总结。").font(.caption).foregroundStyle(.secondary)
                 }
                 let effective = resuming ? proposed.config : config
                 Text(effective.selectionDescription).font(.caption)
@@ -385,11 +304,11 @@ struct AnalysisConfirmation: View {
                 LabeledContent("本次请求", value: "\(proposed.pendingChunks.count) 次分组分析 + 1 次主题整理")
                 Text(proposed.plan.estimate(config: effective, remainingChunkIDs: Set(proposed.pendingChunks.map(\.id))))
                     .font(.caption).foregroundStyle(.secondary)
-                if hadCompleted { Text("新结果完成前，保留现在的总结与章节。").font(.caption) }
+                if hadCompleted { Text("新结果完成前，保留现在的章节。").font(.caption) }
                 Text("遇到错误即暂停，不自动重试或更换模型。已发送的请求仍可能计费。")
                     .font(.caption).foregroundStyle(.secondary)
                 if !keyAvailability.configured(.openAI) {HStack {Text("请在设置中保存 OpenAI Key。").font(.caption);Button("打开设置"){openSettings()}}}
-                if busy {Text(translation.testing ? "连接测试正在进行，完成后可生成总结。":"当前任务正在收尾，完成后可继续生成。").font(.caption).foregroundStyle(.orange)}
+                if busy {Text(translation.testing ? "连接测试正在进行，完成后可生成章节。":"当前任务正在收尾，完成后可继续生成。").font(.caption).foregroundStyle(.orange)}
                 if TranslationModelCatalog.find(effective.model)==nil {HStack {Text("当前模型不在支持的模型目录中。").font(.caption);Button("打开设置"){openSettings()}}}
                 if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.red) }
                 HStack {
@@ -425,9 +344,9 @@ struct AnalysisConfirmation: View {
         guard var request = proposed, !busy else { return }
         do {
             if !resuming { request.config = config }
-            else if compactContinuation { request = try request.compactContinuation() }
+            else { request = try request.chaptersOnlyContinuation() }
             var entry=ImportProcessingEntry(id:lessonID,translation:nil,analysis:request)
-            entry.purpose="chapters";entry.regenerateAnalysis=hadCompleted && !resuming;entry.analysisReconfirmed=compactContinuation && resuming
+            entry.purpose="chapters";entry.regenerateAnalysis=hadCompleted && !resuming;entry.analysisReconfirmed=resuming
             try store.processing.launch([entry],store:store)
             if !resuming { AnalysisPreferences.save(request.config) }
             dismiss()
@@ -441,10 +360,10 @@ struct AnalysisModelSettings: View {
     @AppStorage("analysisModel") private var model = UserDefaults.standard.string(forKey: "model") ?? TranslationModelCatalog.defaultID
     @AppStorage("analysisEffort") private var effort = UserDefaults.standard.string(forKey: "effort") ?? "none"
     var body: some View {
-        Section("课程总结") {
+        Section("课程章节") {
             Toggle("自动·均衡", isOn: $automatic)
             if automatic {Text(AnalysisPreferences.load().selectionDescription).font(.caption)}
-            Picker("总结模型", selection: $model) {
+            Picker("章节模型", selection: $model) {
                 if TranslationModelCatalog.find(model) == nil { Text(model + "（需检查）").tag(model) }
                 ForEach(TranslationModelCatalog.models) { Text($0.displayName).tag($0.id) }
             }.disabled(automatic)
@@ -467,7 +386,7 @@ extension AppStore {
         Task { @MainActor in
             do {
                 guard let record = try await AnalysisRepository(root: root).load(lessonID: lesson.id, sourceVersion: transcript.version) else {
-                    throw Failure("当前字幕还没有已完成的课程总结。")
+                    throw Failure("当前字幕还没有已完成的课程章节。")
                 }
                 let text = try AnalysisMarkdown.export(record, transcript: transcript, offset: lesson.state.subtitleOffsetSeconds, title: lesson.displayTitle)
                 let panel = NSSavePanel(); panel.allowedContentTypes = [.init(filenameExtension: "md") ?? .plainText]

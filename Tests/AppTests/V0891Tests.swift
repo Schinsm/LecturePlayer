@@ -87,16 +87,16 @@ import Core
         defer{try? FileManager.default.removeItem(at:store.repository!.root)}
         let lesson=store.library.lectures[0]
         let action=LessonAnalysisMenuAction(store:store,lesson:lesson){}
-        #expect(action.availability.action=="生成总结…")
+        #expect(action.availability.action=="生成章节…")
         let chapter=AnalysisChapter(id:"one",startCueID:source.cues.first!.id,endCueID:source.cues.last!.id,title:"保存章节",points:["要点"])
         var record=LessonAnalysis(lessonID:lesson.id,sourceVersion:source.version)
         record.completed=AnalysisDocument(chapters:[chapter],overview:[AnalysisOverviewPoint(text:"总结",chapterID:chapter.id)])
         record.completedConfig=AnalysisConfig(model:"gpt-4o-mini");record.completedAt=Date()
         store.analysis.accept(record)
-        #expect(action.availability.action=="重新生成…")
+        #expect(action.availability.action=="重新生成章节…")
         var task=AnalysisTaskState(config:AnalysisConfig(model:"gpt-4o-mini"),plan:try AnalysisPlan.make(source))
         task.status = .failed;record.task=task;store.analysis.accept(record)
-        #expect(action.availability.action=="继续总结…")
+        #expect(action.availability.action=="继续生成章节…")
         #expect(store.analysis.exact(lesson.id,version:source.version)?.completed != nil)
         #expect(!store.analysis.running)
     }

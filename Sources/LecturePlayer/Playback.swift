@@ -3,12 +3,19 @@ import Combine
 import Core
 
 @MainActor final class Playback: ObservableObject {
+    @Published private(set) var videoPresentation = VideoPresentationSnapshot(generation:UUID(),lessonID:nil,sources:[],sizes:[:],items:[:],missing:[],ended:[],beforeStart:[],ready:false)
+    private func publishVideoPresentation() {
+        let next = VideoPresentationSnapshot(generation:generation,lessonID:lectureID,sources:views,sizes:displaySizes,
+            items:Dictionary(uniqueKeysWithValues:views.compactMap {source in player(for:source).currentItem.map{(source.id,ObjectIdentifier($0))}}),
+            missing:missing,ended:ended,beforeStart:beforeStart,ready:ready)
+        if next != videoPresentation {videoPresentation=next;PerformanceTrace.record("video.presentationRevision",1)}
+    }
     let clock = PlaybackClock()
     var position: Double { get { clock.snapshot.seconds } set { clock.publish(newValue, lesson: lectureID) } }
     @Published private(set) var phase: PlaybackPhase = .idle
     private var driftPolicy = PlaybackDriftPolicy()
     private var waitingStarted: Double?
-    @Published private(set) var beforeStart: Set<UUID> = []
+    @Published private(set) var beforeStart: Set<UUID> = [] {didSet {publishVideoPresentation()}}
     private var followerFailures: [UUID:Int] = [:]
     private var correctionTask: Task<Void, Never>?
     private(set) var correctionCount = 0
@@ -18,7 +25,7 @@ import Core
     var prerollCommand: ((AVPlayer, Float, @escaping @Sendable (Bool) -> Void) -> Void)?
     let player = AVPlayer()
     let secondaryPlayer = AVPlayer()
-    @Published private(set) var displaySizes: [UUID: CGSize] = [:]
+    @Published private(set) var displaySizes: [UUID: CGSize] = [:] {didSet {publishVideoPresentation()}}
     private var sizeObservers: [NSKeyValueObservation] = []
     private var sizeCache: [String: CGSize] = [:]
     // Temporary probes prove that the *current* item has decoded a frame. A view
@@ -70,11 +77,11 @@ import Core
         PerformanceTrace.record("video.firstFrameRecoverySeconds", ProcessInfo.processInfo.systemUptime - started)
         return success && !Task.isCancelled
     }
-    @Published var ready = false; @Published var playing = false;  @Published var duration = 0.0; @Published var error: String?
+    @Published var ready = false {didSet {publishVideoPresentation()}}; @Published var playing = false;  @Published var duration = 0.0; @Published var error: String?
     @Published private(set) var volume: Double = 1
-    @Published private(set) var views: [MediaSource] = []
-    @Published private(set) var ended: Set<UUID> = []
-    @Published private(set) var missing: Set<UUID> = []
+    @Published private(set) var views: [MediaSource] = [] {didSet {publishVideoPresentation()}}
+    @Published private(set) var ended: Set<UUID> = [] {didSet {publishVideoPresentation()}}
+    @Published private(set) var missing: Set<UUID> = [] {didSet {publishVideoPresentation()}}
     @Published private(set) var audioID: UUID?
     @Published private(set) var waiting = false
     @Published private(set) var naturallyEnded = false
@@ -138,9 +145,11 @@ import Core
                     item.add(output)
                     self.firstFrameOutputs[source.id] = output; self.firstFrameItems[source.id] = item
                     self.player(for: source).replaceCurrentItem(with: item)
+                    self.publishVideoPresentation()
                     for _ in 0..<250 {
                         if item.status != .unknown { break }; try await Task.sleep(for: .milliseconds(20))
                     }
+                    self.publishVideoPresentation()
                     guard item.status == .readyToPlay else { throw Failure(item.error?.localizedDescription ?? "媒体准备超时") }
                     guard self.generation == token, !Task.isCancelled else { return }
                     // AVPlayerItem presentationSize is the displayed size, including rotation
@@ -159,7 +168,8 @@ import Core
             }
             guard self.generation == token, !Task.isCancelled else { return }
             let available = self.views.filter { !self.missing.contains($0.id) }
-            guard !available.isEmpty else {self.intentPlaying=false;self.phase = .failed;return}
+            // Nothing loaded: show this lesson's recorded length, never the previous lesson's.
+            guard !available.isEmpty else {self.duration=max(0,lecture.duration);self.intentPlaying=false;self.phase = .failed;return}
             self.clockID = available.max { (self.lengths[$0.id] ?? 0) - $0.relativeOffset < (self.lengths[$1.id] ?? 0) - $1.relativeOffset }?.id
             let mediaDuration=available.map { (self.lengths[$0.id] ?? 0) - $0.relativeOffset }.max() ?? 0
             self.duration = self.missing.isEmpty ? mediaDuration:max(lecture.duration,mediaDuration)
@@ -321,7 +331,7 @@ import Core
         sizeObservers.removeAll(); displaySizes.removeAll()
         for (id, output) in firstFrameOutputs { firstFrameItems[id]?.remove(output) }
         firstFrameOutputs.removeAll(); firstFrameItems.removeAll(); displayedFrames.removeAll(); frameRecoveries.removeAll(); automaticFrameRecoveries.removeAll()
-        persist(); ready = false;naturallyEnded=false;naturalEndEligible=false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
+        persist(); ready = false;duration = 0;naturallyEnded=false;naturalEndEligible=false; generation = UUID(); seekGeneration = UUID(); pendingSeek = nil; intentPlaying = false; synchronizing = false
         loadTask?.cancel(); loop?.cancel(); controlTask?.cancel(); loadTask = nil; loop = nil; controlTask = nil
         for p in players { p.cancelPendingPrerolls(); p.pause(); p.replaceCurrentItem(with: nil) }
         for lease in mediaLeases { lease.release() }; mediaLeases = []; lengths = [:]; audible = []; missing = []; ended = []; views = []; lectureID = nil; playing = false; waiting = false; clockID = nil

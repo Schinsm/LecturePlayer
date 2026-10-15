@@ -40,8 +40,8 @@ public struct SavedAnalysisSummary: Equatable, Sendable {
         }
     }
     public var label: String {
-        if taskStatus == .failed {return "总结未完成"}
-        if taskStatus != nil {return "总结已暂停"}
-        return complete ? "总结完成" : "总结待处理"
+        if taskStatus == .failed {return "章节未完成"}
+        if taskStatus != nil {return "章节已暂停"}
+        return complete ? "章节已生成" : "未生成章节"
     }
 }

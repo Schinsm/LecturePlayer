@@ -46,7 +46,7 @@ struct ImportAnalysisPreview {
         for entry in proposed {
             guard let lesson=store.library.lectures.first(where:{$0.id==entry.id}),let source=try store.repository?.read(lesson) else {throw Failure("课件或字幕已变化")}
             if let t=entry.translation {guard t.version==source.version,Set(t.ids).isSubset(of:Set(source.cues.map(\.id))) else {throw Failure("翻译范围已变化")}}
-            if let a=entry.analysis {try a.validate();guard a.plan == (try AnalysisPlan.make(source)) else {throw Failure("总结范围已变化")}}
+            if let a=entry.analysis {if analysisProvider == nil && a.config.protocolVersion != 4 {throw Failure("请重新确认章节生成方式后继续")};try a.validate();guard a.plan == (try AnalysisPlan.make(source)) else {throw Failure("总结范围已变化")}}
         }
         guard !proposed.contains(where:{activeTranslations[$0.id] != nil || activeAnalyses[$0.id] != nil || incoming.map(\.id).contains($0.id)}) else {throw Failure("课件已在处理中")}
         let previous=entries
@@ -129,8 +129,17 @@ struct ImportAnalysisPreview {
             if let confirmed=original.analysis {
                 let saved=try await AnalysisRepository(root:store.repository!.root).load(lessonID:lesson.id,sourceVersion:source.version)
                 if (original.regenerateAnalysis == true && (saved?.completedAt ?? .distantPast)<original.created) || saved?.completed == nil || saved?.task != nil {
-                    if let task=saved?.task,original.analysisReconfirmed != true {guard task.config==confirmed.config,task.plan==confirmed.plan else {throw Failure("已有总结配置已变化，请重新确认")}}
-                    analysisRecord=original.analysisReconfirmed == true ? confirmed : (saved?.task ?? confirmed);ap=try analysisProvider ?? OpenAIAnalysisProvider(key:Keychain.read(.openAI))
+                    if let task=saved?.task {
+                        // A persisted checkpoint is newer than the queue's confirmation snapshot.
+                        // Protocol upgrades retain those blocks and the original model settings.
+                        var latest=task
+                        if original.analysisReconfirmed == true,(task.config.protocolVersion ?? 1)<4,confirmed.config.protocolVersion==4 {
+                            latest=try task.chaptersOnlyContinuation()
+                        }
+                        guard latest.config==confirmed.config,latest.plan==confirmed.plan else {throw Failure("已有章节配置已变化，请重新确认")}
+                        analysisRecord=latest
+                    } else {analysisRecord=confirmed}
+                    ap=try analysisProvider ?? OpenAIAnalysisProvider(key:Keychain.read(.openAI))
                 }
             }
             guard !paused else {throw RequestNotDispatched()}
@@ -152,21 +161,24 @@ struct ImportAnalysisPreview {
         }
     }
     func resume(_ store:AppStore) {
-        let pending=entries.filter{$0.status != "完成"}
+        var pending=entries.filter{$0.status != "完成"}
         guard !pending.isEmpty else{return}
         do {
             var descriptions:[String]=[]
-            for entry in pending {
+            for index in pending.indices {
+                let entry=pending[index]
                 guard let lesson=store.library.lectures.first(where:{$0.id==entry.id}),let source=try store.repository?.read(lesson) else {throw Failure("课件不可用")}
                 descriptions.append(lesson.title)
                 if let t=entry.translation {descriptions.append(try t.config.estimate(t.batches(source.viewing(t.variantID))))}
                 if let a=entry.analysis {
-                    let saved=try AnalysisRepository.readAll(root:store.repository!.root).first{$0.lessonID==entry.id && $0.sourceVersion==a.plan.sourceVersion}
-                    let current=saved?.task ?? a
+                    let saved=try AnalysisRepository.readAll(root:store.repository!.root,lessonID:entry.id).first{$0.lessonID==entry.id && $0.sourceVersion==a.plan.sourceVersion}
+                    let current=try (saved?.task ?? a).chaptersOnlyContinuation()
+                    pending[index].analysis=current;pending[index].analysisReconfirmed=true
+                    if (a.config.protocolVersion ?? 1)<4 {descriptions.append("复用已完成知识点，只生成章节，不再生成整课总结。") }
                     if saved?.completed == nil || saved?.task != nil {descriptions.append(current.config.selectionDescription);descriptions.append(current.plan.estimate(config:current.config,remainingChunkIDs:Set(current.pendingChunks.map(\.id))))}
                 }
             }
-            let alert=NSAlert();alert.messageText="继续排队的翻译与总结？"
+            let alert=NSAlert();alert.messageText="继续排队的翻译与章节？"
             alert.informativeText=descriptions.joined(separator:"\n")+"\n仅处理未完成内容；费用为估算，不自动重试。"
             alert.addButton(withTitle:"确认继续");alert.addButton(withTitle:"取消")
             guard alert.runModal() == .alertFirstButtonReturn else{return}

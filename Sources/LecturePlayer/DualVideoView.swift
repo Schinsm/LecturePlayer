@@ -8,7 +8,7 @@ struct DualVideoView: View {
     @ObservedObject var playback: Playback
     var body: some View {
         VideoCanvas(playback: playback, layout: store.lecture?.layout ?? .inset,
-                    swapped: store.lecture?.swapped ?? false, preferences: store.pipPreferences)
+                    swapped: store.lecture?.swapped ?? false, preferences: store.pipPreferences, snapshot:playback.videoPresentation)
             .frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
     }
 }
@@ -17,9 +17,10 @@ struct DualVideoView: View {
 struct VideoCanvas: NSViewRepresentable {
     let playback: Playback; let layout: VideoLayout; let swapped: Bool
     let preferences: PictureInPicturePreferences
+    let snapshot: VideoPresentationSnapshot
     func makeNSView(context: Context) -> Canvas { Canvas() }
     func updateNSView(_ view: Canvas, context: Context) {
-        view.configure(playback, layout: layout, swapped: swapped, preferences: preferences)
+        view.configure(playback, layout: layout, swapped: swapped, preferences: preferences, snapshot:snapshot)
     }
     static func dismantleNSView(_ view: Canvas, coordinator: ()) { view.tearDown() }
     final class Canvas: NSView {
@@ -74,7 +75,10 @@ struct VideoCanvas: NSViewRepresentable {
             handle.commit = { [weak self] in self?.preferences?.flush() }
         }
         required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
-        func configure(_ playback: Playback, layout: VideoLayout, swapped: Bool, preferences: PictureInPicturePreferences) {
+        func configure(_ playback: Playback, layout: VideoLayout, swapped: Bool, preferences: PictureInPicturePreferences, snapshot:VideoPresentationSnapshot? = nil) {
+            let snapshot = snapshot ?? playback.videoPresentation
+            guard snapshot.generation == playback.displayGeneration else {return}
+            PerformanceTrace.record("video.canvasSources",Double(snapshot.sources.count))
             self.playback = playback
             if self.preferences !== preferences {
                 self.preferences?.flush(); self.preferences = preferences
@@ -83,16 +87,16 @@ struct VideoCanvas: NSViewRepresentable {
                     DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
                 }
             }
-            sizes = playback.displaySizes
-            sources = playback.views; mode = layout; self.swapped = swapped
+            sizes = snapshot.sizes
+            sources = snapshot.sources; mode = layout; self.swapped = swapped
             for i in videos.indices {
                 guard i < sources.count else { videos[i].isHidden = true; videos[i].detach(); frameBindings[i] = nil; baseMessages[i] = ""; continue }
                 let source = sources[i], player = playback.player(for: source)
                 videos[i].player = player
                 videos[i].setAccessibilityLabel(source.role.rawValue + "视频")
                 bindFirstFrame(index: i, source: source, playback: playback)
-                baseMessages[i] = playback.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
-                    playback.ended.contains(source.id) ? "该视角已结束" : playback.isBeforeStart(source) ? "该视角尚未开始" : ""
+                baseMessages[i] = snapshot.missing.contains(source.id) ? source.role.rawValue + "文件缺失 · 在本课文件中重新选择" :
+                    snapshot.ended.contains(source.id) ? "该视角已结束" : snapshot.beforeStart.contains(source.id) ? "该视角尚未开始" : ""
             }
             // NSViewRepresentable can update after AppKit has finished its layout
             // pass. Apply child geometry now, including the initial zero-size pass.
@@ -298,8 +302,10 @@ struct VideoCanvas: NSViewRepresentable {
     }
 }
 struct LayoutMenu: View {
+    @ObservedObject var columns:ReadingColumns
     @ObservedObject var store: AppStore
     @ObservedObject var playback: Playback
+    init(store:AppStore,playback:Playback,columns:ReadingColumns){self.store=store;self.playback=playback;self.columns=columns}
     func available(_ layout: VideoLayout) -> Bool {
         if layout == .screen { return playback.views.contains { $0.role == .screen } }
         if layout == .camera { return playback.views.contains { $0.role == .camera } }
@@ -307,6 +313,9 @@ struct LayoutMenu: View {
     }
     var body: some View {
         Menu {
+            Button(columns.visible(.chapters) ? "收起章节":"显示章节") {if columns.visible(.chapters) {columns.hide(.chapters)}else{columns.show(.chapters)}}
+            Button(columns.visible(.transcript) ? "收起转写":"显示转写") {if columns.visible(.transcript) {columns.hide(.transcript)}else{columns.show(.transcript)}}
+            Divider()
             ForEach(VideoLayout.allCases, id: \.self) { layout in
                 Button((store.lecture?.layout ?? .inset) == layout ? "✓ " + layout.rawValue : layout.rawValue) { if let id = store.current { store.updateLecture(id) { $0.layout = layout } } }.disabled(!available(layout))
             }

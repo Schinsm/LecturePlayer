@@ -18,7 +18,7 @@ private actor ChapterQueueMock:AnalysisProvider {
     }
     func synthesize(_ points:[AnalysisChapter],config:AnalysisConfig) async throws -> AnalysisResponse<AnalysisDocument> {
         calls.append("synthesis")
-        var doc=AnalysisDocument(chapters:points,overview:[.init(text:"总结",chapterID:points[0].id)])
+        var doc=AnalysisDocument(chapters:points,overview:config.protocolVersion==4 ? [] : [.init(text:"总结",chapterID:points[0].id)])
         doc.topics=[AnalysisTopic(id:"topic",title:"主题",overview:"概述",subtopics:points)]
         return AnalysisResponse(value:doc,result:TranslationResult(items:[],inputTokens:10,outputTokens:10))
     }

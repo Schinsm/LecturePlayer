@@ -52,7 +52,7 @@ import Core
             lessonRevisions[lessonID, default: 0] += 1; revision += 1
         } catch {
             guard loadTokens[lessonID] == token, lessonRevisions[lessonID, default: 0] == startingRevision else { return }
-            loadErrors[lessonID] = "无法读取课程总结：" + error.localizedDescription
+            loadErrors[lessonID] = "无法读取课程章节：" + error.localizedDescription
         }
     }
     func pause() {
@@ -83,7 +83,7 @@ import Core
         runningLessonID = lessonID; runningVersion = source.version; pauseRequested = false
         scheduler=store.requests
         if !coordinated {store.translation.analyzing = true}
-        status = "准备生成课程总结与章节…"
+        status = "准备生成章节…"
         worker = Task { [weak self, weak store] in
             guard let self, let store else { return }
             defer {
@@ -96,6 +96,8 @@ import Core
     }
 
     private func persist(_ record: LessonAnalysis, repository: AnalysisRepository) async throws {
+        var record=record
+        if record.task?.config.protocolVersion == 4 || record.completedConfig?.protocolVersion == 4 {record.schema=3}
         let started=Date();try await repository.save(record);PerformanceTrace.record("analysis.commit",Date().timeIntervalSince(started))
         records[Self.key(record.lessonID, record.sourceVersion)] = record
         loadErrors[record.lessonID] = nil
@@ -191,7 +193,7 @@ import Core
                 status = "已暂停，完成的分析已保存。"; return
             }
             try currentVersion(store, lessonID, record.sourceVersion)
-            status = "正在整理相邻主题与整课总结…"
+            status = "正在整理章节…"
             let lease=try await store.requests.acquire(lesson:lessonID)
             synthesisLease=lease
             try currentVersion(store,lessonID,record.sourceVersion)
@@ -210,13 +212,13 @@ import Core
                 guard response.result.problem == nil, let document = response.value else {
                     throw Failure(response.result.problem ?? "服务没有返回完整总结；原分析结果已保留。")
                 }
-                try AnalysisValidation.synthesis(document, proposed: progress.proposedChapters)
+                try AnalysisValidation.synthesis(document, proposed: progress.proposedChapters, protocolVersion: progress.config.protocolVersion ?? 1)
                 attempt.outcome = "completed"; attempt.validationSeconds = Date().timeIntervalSince(checked)
                 record.attempts[record.attempts.count - 1] = attempt
                 // Keep the old completed document through every partial or failed regeneration.
-                record.schema = document.topics == nil ? 1 : 2; record.completed = document; record.completedConfig = progress.config; record.completedAt = Date(); record.task = nil
+                record.schema = progress.config.protocolVersion == 4 ? 3 : document.topics == nil ? 1 : 2; record.completed = document; record.completedConfig = progress.config; record.completedAt = Date(); record.task = nil
                 try await persist(record, repository: repository)
-                status = "本课总结与章节已完成。"
+                status = "本课章节已生成。"
             } catch {
                 onPause?();await store.requests.pause()
                 attempt.outcome = Task.isCancelled ? "cancelled" : "failed"; attempt.message = error.localizedDescription; attempt.validation = attempt.validation ?? (error as? AnalysisValidationFailure)?.detail ?? AnalysisValidationDetail(code:"validation")
@@ -243,7 +245,7 @@ enum AnalysisPreferences {
     static func load(_ defaults: UserDefaults = .standard) -> AnalysisConfig {
         var config = AnalysisConfig(model: defaults.string(forKey: "analysisModel") ?? defaults.string(forKey: "model") ?? TranslationModelCatalog.defaultID,
                        effort: defaults.string(forKey: "analysisEffort") ?? defaults.string(forKey: "effort") ?? "none")
-        config.protocolVersion=3
+        config.protocolVersion=4
         config.resolvedModels=ResolvedModelPlan.analysis(config,automatic:defaults.bool(forKey:"analysisAutomaticModel"))
         return config.forStage("analysis")
     }

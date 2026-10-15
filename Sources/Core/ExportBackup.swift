@@ -44,6 +44,7 @@ public struct Backup: Codable, Sendable {
         self.library = library; self.transcripts = transcripts; self.analyses = analyses; self.processing=processing
         if processing != nil || analyses?.values.contains(where:{$0.schema==2}) == true {schema=5}
         if library.schema>=5 {schema=6}
+        if analyses?.values.contains(where:{$0.schema >= 3}) == true || processing?.contains(where:{$0.analysis?.config.protocolVersion == 4}) == true {schema=7}
     }
     public static func analysisPayload(_ records: [LessonAnalysis]) throws -> [String: LessonAnalysis] {
         var result: [String: LessonAnalysis] = [:]
@@ -55,7 +56,7 @@ public struct Backup: Codable, Sendable {
         return result
     }
     public func validate() throws {
-        guard (1...6).contains(schema) else { throw Failure("不支持的备份版本") }
+        guard (1...7).contains(schema) else { throw Failure("不支持的备份版本") }
         _ = try LibraryMigration.upgrade(library)
         for (key, transcript) in transcripts {
             try transcript.validate()
@@ -73,7 +74,7 @@ public struct Backup: Codable, Sendable {
             guard schema>=5,Set(processing.map(\.id)).count==processing.count else {throw Failure("导入任务备份无效")}
             for entry in processing {
                 guard library.lectures.contains(where:{$0.id==entry.id}) else {throw Failure("任务课件缺失")}
-                if let a=entry.analysis {try a.validate();guard let t=transcripts["\(entry.id)-\(a.plan.sourceVersion)"],a.plan == (try AnalysisPlan.make(t)) else {throw Failure("总结任务原文不匹配")}}
+                if let a=entry.analysis {if a.config.protocolVersion == 4 && schema < 7 {throw Failure("章节协议需要备份格式 7")};try a.validate();guard let t=transcripts["\(entry.id)-\(a.plan.sourceVersion)"],a.plan == (try AnalysisPlan.make(t)) else {throw Failure("总结任务原文不匹配")}}
                 if let task=entry.translation {guard let t=transcripts["\(entry.id)-\(task.version)"],Set(task.ids).isSubset(of:Set(t.cues.map(\.id))) else {throw Failure("翻译任务原文不匹配")}}
             }
         }
@@ -82,6 +83,7 @@ public struct Backup: Codable, Sendable {
             let expected = try Self.analysisPayload(Array(analyses.values))
             guard Set(expected.keys) == Set(analyses.keys) else { throw Failure("备份总结标识不匹配") }
             for (key, record) in analyses {
+                guard record.schema < 3 || schema >= 7 else {throw Failure("章节记录需要备份格式 7")}
                 let expectedKey = AnalysisRepository.fileURL(root: URL(fileURLWithPath: "/"), lessonID: record.lessonID, sourceVersion: record.sourceVersion).deletingPathExtension().lastPathComponent
                 guard key == expectedKey else { throw Failure("备份总结标识不匹配") }
                 guard library.lectures.contains(where: { $0.id == record.lessonID }),

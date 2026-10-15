@@ -16,7 +16,7 @@ import Testing
         return (dir,l,t)
     }
     @Test func availabilityNeverInventsQueueAndShowsBlockers() throws {
-        #expect(AnalysisAvailability(saved:nil).label=="未生成总结")
+        #expect(AnalysisAvailability(saved:nil).label=="未生成章节")
         #expect(AnalysisAvailability(saved:nil,queued:true).state == .queued)
         #expect(AnalysisAvailability(saved:nil,queued:true,queuePaused:true).state == .paused)
         #expect(AnalysisAvailability(saved:nil,running:true).state == .generating)

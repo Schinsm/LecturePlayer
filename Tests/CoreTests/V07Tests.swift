@@ -28,7 +28,7 @@ import Testing
         #expect(old.variants?["legacy"]?.translations[t.cues[1].id]?.ai=="历史")
         #expect(old.cues==original.cues && old.original==original.original)
         var lib=Library();lib.schema=3;var b=Backup(library:lib,transcripts:["\(UUID())-\(t.version)":original]);b.schema=2;try b.validate()
-        var future=b;future.schema=7;#expect(throws:(any Error).self){try future.validate()}
+        var future=b;future.schema=8;#expect(throws:(any Error).self){try future.validate()}
     }
     @Test func serviceVariantsDoNotBlockEachOtherOrChangeTiming() throws {
         var t=try sample();let id=t.cues[0].id;t.translations[id]=Translation(ai:"A",cacheKey:"same")

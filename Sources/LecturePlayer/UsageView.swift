@@ -35,7 +35,7 @@ struct TranslationHistory:View {
             Picker("服务",selection:$service){Text("全部服务").tag("all");ForEach(TranslationService.allCases,id: \.self){Text($0.title).tag($0.rawValue)}}
             Picker("模型",selection:$model){Text("全部模型").tag("all");ForEach(presentation.snapshot.models,id: \.self){Text($0).tag($0)}}
             Picker("课件",selection:$lesson){Text("全部课件").tag("all");ForEach(presentation.snapshot.lessons.keys.sorted(),id: \.self){id in Text(presentation.snapshot.lessons[id] ?? id).tag(id)}}
-            Picker("用途",selection:$purpose){Text("全部").tag("all");Text("课程翻译").tag("course");Text("连接测试").tag("test");Text("课程总结").tag("analysis")}
+            Picker("用途",selection:$purpose){Text("全部").tag("all");Text("课程翻译").tag("course");Text("连接测试").tag("test");Text("课程章节").tag("analysis")}
             let summary=presentation.snapshot.summary
             HStack {metric("请求",String(summary.requests));Divider();metric("成功 / 失败 / 未记录", "\(presentation.snapshot.succeeded) / \(presentation.snapshot.failed) / \(presentation.snapshot.unknown)");Divider();metric("已知用量估算",String(format:"$%.4f",summary.usd))}.frame(height:55)
             UsageCharts(snapshot:presentation.snapshot,period:period)
@@ -51,7 +51,7 @@ struct TranslationHistory:View {
             if !error.isEmpty {Text(error).foregroundStyle(.red).font(.caption)}
         }
         Section("诊断") {
-            DisclosureGroup("课程总结请求与耗时") {
+            DisclosureGroup("课程章节请求与耗时") {
                 ForEach(diagnosticAnalyses) {row in
                     VStack(alignment:.leading,spacing:4) {
                         Text(row.lesson + " · " + row.attempt.stage)

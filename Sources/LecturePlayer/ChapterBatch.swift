@@ -30,11 +30,13 @@ struct ChapterBatchRow: Identifiable,Sendable {
                     throw Failure("已有翻译与总结队列，请先从课件的“继续”入口恢复")
                 }
                 let queued=entries.first{$0.id==lesson.id && $0.status != "完成"}?.analysis
-                let task=try existing?.task ?? queued ?? AnalysisTaskState(config:config,plan:AnalysisPlan.make(source))
+                var task=try existing?.task ?? queued ?? AnalysisTaskState(config:config,plan:AnalysisPlan.make(source))
+                let upgrading=(task.config.protocolVersion ?? 1)<4
+                if upgrading {task=try task.chaptersOnlyContinuation()}
                 guard task.plan == (try AnalysisPlan.make(source)) else {throw Failure("排队任务对应旧字幕，请在本课章节页重新确认")}
                 try task.validate()
-                var entry=ImportProcessingEntry(id:lesson.id,translation:nil,analysis:task);entry.purpose="chapters"
-                let detail=(existing?.task == nil ? "待生成" : "继续未完成部分，沿用已确认配置")+"\n"+task.config.selectionDescription+"\n"+task.plan.estimate(config:task.config,remainingChunkIDs:Set(task.pendingChunks.map(\.id)))
+                var entry=ImportProcessingEntry(id:lesson.id,translation:nil,analysis:task);entry.purpose="chapters";entry.analysisReconfirmed=upgrading
+                let detail=(upgrading ? "复用已有知识点，只生成章节。\n":"")+(existing?.task == nil ? "待生成" : "继续未完成部分，沿用已确认配置")+"\n"+task.config.selectionDescription+"\n"+task.plan.estimate(config:task.config,remainingChunkIDs:Set(task.pendingChunks.map(\.id)))
                 return ChapterBatchRow(id:lesson.id,title:lesson.title,detail:detail,entry:entry)
             } catch {return ChapterBatchRow(id:lesson.id,title:lesson.title,detail:"未加入："+error.localizedDescription,entry:nil)}
         }
@@ -52,7 +54,7 @@ struct ChapterBatchConfirmation: View {
     init(store:AppStore,ids:Set<UUID>) {self.store=store;self.ids=ids;processing=store.processing;translation=store.translation}
     var body:some View {
         VStack(alignment:.leading,spacing:16) {
-            Text("生成总结与章节").font(.title2)
+            Text("生成章节").font(.title2)
             Text("按确认顺序调度，全局最多两个请求。播放不受影响；失败或暂停后停止后续请求。")
                 .font(.callout).foregroundStyle(.secondary)
             ScrollView {

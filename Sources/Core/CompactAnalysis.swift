@@ -42,7 +42,16 @@ public enum CompactAnalysis {
     public struct Topic:Codable,Sendable {public var start:String;public var title:String;public var summary:String}
     public struct Point:Codable,Sendable {public var text:String;public var source:String}
     public struct Payload:Codable,Sendable {public var topics:[Topic];public var overview:[Point]}
-    public static func build(_ payload:Payload,proposed:[AnalysisChapter]) throws -> AnalysisDocument {
+    public struct ChaptersPayload: Decodable, Sendable {
+        public var topics: [Topic]
+        enum CodingKeys: String, CodingKey {case topics, overview}
+        public init(from decoder: Decoder) throws {
+            let box = try decoder.container(keyedBy:CodingKeys.self)
+            guard !box.contains(.overview) else {throw AnalysisValidationFailure("format","章节协议不包含整课总结")}
+            topics = try box.decode([Topic].self,forKey:.topics)
+        }
+    }
+    public static func build(_ payload:Payload,proposed:[AnalysisChapter],protocolVersion:Int = 3) throws -> AnalysisDocument {
         guard !proposed.isEmpty,Set(proposed.map(\.id)).count==proposed.count else {throw AnalysisValidationFailure("input","已保存知识点为空或编号重复")}
         let ids=proposed.indices.map{String(format:"p%04d",$0+1)}
         let positions=Dictionary(uniqueKeysWithValues:ids.enumerated().map{($0.element,$0.offset)})
@@ -60,13 +69,13 @@ public enum CompactAnalysis {
             let end=i+1<starts.count ? starts[i+1]:proposed.count
             return AnalysisTopic(id:"compact-topic-\(i+1)",title:topic.title,overview:topic.summary,subtopics:Array(proposed[starts[i]..<end]))
         }
-        guard (1...8).contains(payload.overview.count) else {throw AnalysisValidationFailure("count","整课总结要点数量无效",received:payload.overview.count)}
+        guard protocolVersion == 4 ? payload.overview.isEmpty : (1...8).contains(payload.overview.count) else {throw AnalysisValidationFailure("count","整课总结要点数量无效",received:payload.overview.count)}
         document.overview=try payload.overview.map {point in
             guard let index=positions[point.source] else {throw AnalysisValidationFailure("reference","总结要点引用未知知识点",ids:[point.source])}
             guard !point.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {throw AnalysisValidationFailure("empty","总结要点为空",ids:[point.source])}
             return AnalysisOverviewPoint(text:point.text,chapterID:proposed[index].id)
         }
-        try AnalysisValidation.synthesis(document,proposed:proposed)
+        try AnalysisValidation.synthesis(document,proposed:proposed,protocolVersion:protocolVersion)
         return document
     }
 }

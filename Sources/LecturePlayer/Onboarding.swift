@@ -134,7 +134,7 @@ struct OnboardingView: View {
             }.formStyle(.grouped)
         case .service:
             Form {
-                Section { Text("翻译服务可稍后设置。课程总结使用 OpenAI。").foregroundStyle(.secondary) }
+                Section { Text("翻译服务可稍后设置。课程章节使用 OpenAI。").foregroundStyle(.secondary) }
                 APISettings(store: store, job: store.translation, includesSpeed: false)
             }.formStyle(.grouped)
         case .importing:

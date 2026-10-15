@@ -6,21 +6,21 @@ public struct AnalysisAvailability:Equatable,Sendable {
     public var reason:String?
     public var label:String {
         switch state {
-        case .notGenerated:return "未生成总结"
-        case .queued:return "总结排队中"
-        case .generating:return "总结生成中"
-        case .paused:return "总结已暂停"
-        case .failed:return "总结失败"
-        case .completed:return "总结完成"
+        case .notGenerated:return "未生成章节"
+        case .queued:return "章节排队中"
+        case .generating:return "章节生成中"
+        case .paused:return "章节已暂停"
+        case .failed:return "章节生成失败"
+        case .completed:return "章节已生成"
         case .oldSource:return "对应旧字幕"
         }
     }
     public var action:String {
         switch state {
-        case .paused,.failed:return "继续总结…"
-        case .completed:return "重新生成…"
+        case .paused,.failed:return "继续生成章节…"
+        case .completed:return "重新生成章节…"
         case .queued,.generating:return "查看任务"
-        default:return "生成总结…"
+        default:return "生成章节…"
         }
     }
     public init(saved:SavedAnalysisSummary?,hasOlder:Bool=false,queued:Bool=false,running:Bool=false,queuePaused:Bool=false,hasTimedSource:Bool=true,readError:String?=nil,keyConfigured:Bool?=nil,modelAvailable:Bool=true,serviceTest:Bool=false) {
@@ -34,8 +34,8 @@ public struct AnalysisAvailability:Equatable,Sendable {
         reason=readError
         if reason==nil && !hasTimedSource {reason="先添加带时间戳的英文字幕（VTT / SRT）。"}
         if reason==nil && keyConfigured==false {reason="请在设置中保存 OpenAI Key。"}
-        if reason==nil && !modelAvailable {reason="当前总结模型不可用，请在设置中选择支持的模型。"}
-        if reason==nil && serviceTest {reason="连接测试正在进行，完成后可生成总结。"}
+        if reason==nil && !modelAvailable {reason="当前章节模型不可用，请在设置中选择支持的模型。"}
+        if reason==nil && serviceTest {reason="连接测试正在进行，完成后可生成章节。"}
     }
 }
 

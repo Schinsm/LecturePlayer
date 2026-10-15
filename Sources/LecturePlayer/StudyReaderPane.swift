@@ -1,27 +1,24 @@
 import SwiftUI
 import Core
 
-struct ReaderSourceRequest: Equatable {var id = UUID(); var cueID: String}
+struct ReaderSourceRequest: Equatable {var id=UUID();var cueID:String}
 
-struct StudyReaderPane: View {
-    @AppStorage("readerPaneVisible") private var readerVisible = true
-    @ObservedObject var store: AppStore
-    let playback: Playback
-    @LPState private var sourceRequest: ReaderSourceRequest?
-    @ObservedObject private var session:ReaderSession
-    init(store:AppStore,playback:Playback){self.store=store;self.playback=playback;session=store.readerPresentation.session(store.current ?? UUID())}
-    var body: some View {
-        GeometryReader { geometry in
-            VStack(spacing:0) {
-                AnalysisPanel(store:store,job:store.analysis,translation:store.translation,playback:playback,visible:readerVisible) {cueID in
-                    sourceRequest=ReaderSourceRequest(cueID:cueID)
-                }
-                .frame(height:session.chapterDirectoryExpanded ? min(440,geometry.size.height * 0.45) : min(190,geometry.size.height * 0.30))
-                .clipped()
-                Divider()
-                ReaderPane(store:store,playback:playback,visible:readerVisible,sourceRequest:sourceRequest)
-                    .frame(maxHeight:.infinity)
-            }
+struct ChapterColumn:View {
+    @ObservedObject var store:AppStore
+    @ObservedObject private var columns:ReadingColumns
+    init(store:AppStore){self.store=store;columns=store.readingColumns}
+    var body:some View {
+        AnalysisPanel(store:store,job:store.analysis,translation:store.translation,playback:store.playback,visible:columns.visible(.chapters)) {cueID in
+            guard let id=store.current else{return}
+            columns.show(.transcript)
+            store.readerPresentation.session(id).sourceRequest=ReaderSourceRequest(cueID:cueID)
         }
     }
+}
+struct TranscriptColumn:View {
+    @ObservedObject var store:AppStore
+    @ObservedObject private var columns:ReadingColumns
+    @ObservedObject private var session:ReaderSession
+    init(store:AppStore){self.store=store;columns=store.readingColumns;session=store.readerPresentation.session(store.current ?? UUID())}
+    var body:some View {ReaderPane(store:store,playback:store.playback,visible:columns.visible(.transcript),sourceRequest:session.sourceRequest)}
 }

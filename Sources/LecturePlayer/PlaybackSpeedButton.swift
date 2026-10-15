@@ -8,7 +8,7 @@ struct PlaybackSpeedButton: NSViewRepresentable {
     func makeNSView(context: Context) -> SpeedAnchorButton { SpeedAnchorButton() }
     func updateNSView(_ view: SpeedAnchorButton, context: Context) {
         view.speed = speed; view.choose = choose
-        view.title = "\(speed.formatted())× ⌄"
+        view.updateLabel()
     }
     static func dismantleNSView(_ view: SpeedAnchorButton, coordinator: ()) { view.closePanel() }
 }
@@ -16,6 +16,10 @@ struct PlaybackSpeedButton: NSViewRepresentable {
 final class SpeedAnchorButton: NSButton, NSPopoverDelegate {
     static let rates = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5]
     private(set) static weak var active: SpeedAnchorButton?
+    private let label = NSTextField(labelWithString:"")
+    private let arrow = NSImageView()
+    func updateLabel() {label.stringValue="\(speed.formatted())×";setAccessibilityValue(label.stringValue)}
+    override func hitTest(_ point:NSPoint)->NSView? {super.hitTest(point) == nil ? nil : self}
     var speed = 1.0
     var choose: ((Double) -> Void)?
     private(set) var panel: NSPopover?
@@ -24,7 +28,19 @@ final class SpeedAnchorButton: NSButton, NSPopoverDelegate {
     override init(frame: NSRect) {
         super.init(frame: frame)
         isBordered = false; bezelStyle = .regularSquare; target = self; action = #selector(showPanel)
-        font = .systemFont(ofSize: 12); title = "1× ⌄"
+        font = .systemFont(ofSize: 12); title = ""
+        label.font = .systemFont(ofSize:12); label.alignment = .center
+        arrow.image = NSImage(systemSymbolName:"chevron.down",accessibilityDescription:nil)
+        arrow.symbolConfiguration = NSImage.SymbolConfiguration(pointSize:9,weight:.medium)
+        for view in [label,arrow] {view.translatesAutoresizingMaskIntoConstraints=false;addSubview(view)}
+        NSLayoutConstraint.activate([
+            label.centerYAnchor.constraint(equalTo:centerYAnchor),
+            arrow.centerYAnchor.constraint(equalTo:centerYAnchor),
+            label.trailingAnchor.constraint(equalTo:arrow.leadingAnchor,constant:-4),
+            arrow.trailingAnchor.constraint(equalTo:centerXAnchor,constant:24),
+            arrow.widthAnchor.constraint(equalToConstant:10),arrow.heightAnchor.constraint(equalToConstant:12)
+        ])
+        updateLabel()
         setAccessibilityLabel("倍速"); toolTip = "播放速度"
     }
     required init?(coder: NSCoder) { fatalError() }

@@ -63,14 +63,14 @@ import Testing
             task.completedChunks[chunk.id]=[AnalysisChapter(id:chunk.id,startCueID:chunk.targets.first!.id,endCueID:chunk.targets.last!.id,title:"例子",points:["概念","结论"])]
         }
         task.status = .paused;analysis.task=task
-        #expect(SavedAnalysisSummary(analysis).label=="总结已暂停")
+        #expect(SavedAnalysisSummary(analysis).label=="章节已暂停")
         #expect(SavedAnalysisSummary(analysis).progress!<1)
         analysis.completed=AnalysisDocument(chapters:task.proposedChapters,overview:[AnalysisOverviewPoint(text:"保留旧结果",chapterID:task.proposedChapters[0].id)])
         analysis.task?.status = .failed
         #expect(SavedAnalysisSummary(analysis).complete)
-        #expect(SavedAnalysisSummary(analysis).label=="总结未完成")
+        #expect(SavedAnalysisSummary(analysis).label=="章节未完成")
         analysis.task=nil
-        #expect(SavedAnalysisSummary(analysis).label=="总结完成")
+        #expect(SavedAnalysisSummary(analysis).label=="章节已生成")
     }
     @Test func restoreClearsAnalysisPresentationButCannotDiscardRunningWork() throws {
         let (store,source)=try V052AppTests().fixture()
@@ -98,12 +98,12 @@ import Testing
         record.completedConfig=AnalysisConfig(model:"gpt-4o-mini");record.completedAt=Date()
         try await AnalysisRepository(root:store.repository!.root).save(record)
         store.analysis.accept(record)
-        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="总结完成")
+        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="章节已生成")
         let file=AnalysisRepository.fileURL(root:store.repository!.root,lessonID:lesson.id,sourceVersion:source.version)
         try Data("invalid refreshed file".utf8).write(to:file,options:.atomic)
         await store.analysis.load(store:store,lessonID:lesson.id)
         #expect(store.lessonStatuses.analysisIssue(lesson,job:store.analysis) != nil)
-        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="总结失败")
+        #expect(store.lessonStatuses.savedAnalysisLabel(lesson,job:store.analysis)=="章节生成失败")
         #expect(store.analysis.exact(lesson.id,version:source.version)?.completed==record.completed)
         #expect(!store.analysis.running && !store.translation.busy)
     }
