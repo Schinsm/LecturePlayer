@@ -39,6 +39,8 @@ public struct Lecture: Codable, Identifiable, Equatable, Sendable {
     public var generatedFilePaths:[String]?
     public var id = UUID(); public var courseID: UUID; public var folderID: UUID?; public var title: String; public var path: String; public var bookmark: Data?; public var identity: String; public var transcriptVersion: String?; public var state = PlaybackState(); public var duration = 0.0; public var finished = false; public var marks: [Mark] = []
     public var week: Int?; public var sessionType: String?; public var topic: String?; public var customTitle: Bool?
+    /// Set when the app produced the English subtitles (macOS transcription or MacWhisper).
+    public var transcriptSource: TranscriptSource?
     public var sources: [MediaSource]?; public var layout: VideoLayout?; public var swapped: Bool?; public var audioSourceID: UUID?; public var archived: Bool?
     public init(title: String, courseID: UUID, folderID: UUID?, url: URL, bookmark: Data?, identity: String) { self.title = title; self.courseID = courseID; self.folderID = folderID; self.path = url.path; self.bookmark = bookmark; self.identity = identity }
 }

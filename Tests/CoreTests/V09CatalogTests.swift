@@ -119,3 +119,19 @@ struct V091RetryPolicyTests {
         #expect(RetryPolicy.delay(status: 429, retryAfter: 600, attempt: 0) == 60, "waits are capped")
     }
 }
+
+/// 0.9.2: concurrent first writes into a course's LecturePlayer folder must not fail on the marker file.
+struct V092MarkerTests {
+    @Test func concurrentMarkerCreationAllSucceed() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lp-marker-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let marker = folder.appendingPathComponent(GeneratedFiles.marker)
+        let failures = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<16 { group.addTask { (try? GeneratedFiles.ensureMarker(marker)) == nil } }
+            return await group.reduce(0) { $0 + ($1 ? 1 : 0) }
+        }
+        #expect(failures == 0)
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+    }
+}

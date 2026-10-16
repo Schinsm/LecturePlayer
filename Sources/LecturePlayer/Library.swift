@@ -28,6 +28,7 @@ import UniformTypeIdentifiers
     }
     private var memoryPressure: DispatchSourceMemoryPressure?
     let lessonStatuses=LessonStatusPresentation()
+    let transcription=TranscriptionJob()
     let usagePresentation=UsagePresentation()
     var usageCache:UsageDataset?
     var usageCacheToken=""
@@ -201,7 +202,7 @@ import UniformTypeIdentifiers
     func addFolder(_ name: String) { guard let course = selectedCourse else { return }; library.folders.append(Folder(name: name, courseID: course, parentID: selectedFolder)); persist() }
     func importPair(video: URL, subtitle: URL?, title: String) throws {
         guard let courseID = selectedCourse else { throw Failure("请先创建或选择课程") }
-        try ImportPlanner.requireLocal(video)
+        try ImportPlanner.requireAvailable(video)
         let identity = try Self.fileIdentity(video)
         guard !library.lectures.contains(where: { $0.identity == identity }) else { throw Failure("此视频已经导入；请使用已有回放或重新定位") }
         let bookmark = try video.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)

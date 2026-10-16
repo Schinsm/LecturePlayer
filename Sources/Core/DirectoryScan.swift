@@ -34,6 +34,7 @@ public actor DirectoryScanner {
     public init(cache:MediaFingerprintCache=MediaFingerprintCache()) {fingerprints=cache}
     public func scan(_ root: URL, settle: Duration = .seconds(1)) async throws -> DirectoryScanResult {
         var result = DirectoryScanResult(root: DirectoryIndex.canonical(root))
+        var cloudSubtitles: [URL] = []
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &directory), directory.boolValue,
               FileManager.default.isReadableFile(atPath: root.path) else { throw Failure("总目录不可读取：\(root.path)") }
@@ -46,7 +47,8 @@ public actor DirectoryScanner {
                         if v.isSymbolicLink == true { continue }
                         if v.isDirectory == true { result.directories.append(url); visit(url) }
                         else if v.isRegularFile == true, ImportPlanner.media.union(ImportPlanner.subtitles).contains(url.pathExtension.lowercased()), !ImportPlanner.isGenerated(url) {
-                            try ImportPlanner.requireLocal(url); result.stamps[url.path] = try FileStamp.read(url); result.files.append(url)
+                            if ImportPlanner.subtitles.contains(url.pathExtension.lowercased()), CloudFile.isOnlineOnly(url) { cloudSubtitles.append(url); continue }
+                            try ImportPlanner.requireAvailable(url); result.stamps[url.path] = try FileStamp.read(url); result.files.append(url)
                         }
                     } catch { result.issues.append("\(url.path)：\(error.localizedDescription)") }
                 }
@@ -55,6 +57,12 @@ public actor DirectoryScanner {
         // A root failure is fatal rather than an apparently successful empty scan.
         _ = try FileManager.default.contentsOfDirectory(atPath: root.path)
         visit(result.root)
+        // Subtitles are small and are read during refresh, so online-only ones are fetched now.
+        for url in cloudSubtitles {
+            do { try await CloudFile.download(url, stall: 20); result.stamps[url.path] = try FileStamp.read(url); result.files.append(url) }
+            catch is CancellationError { throw CancellationError() }
+            catch { result.issues.append("\(url.path)：\(error.localizedDescription)") }
+        }
         try await Task.sleep(for: settle)
         struct Checked:Sendable {var url:URL;var media:IndexedMedia?;var issue:String?;var unstable=false}
         let files=result.files,stamps=result.stamps,cache=fingerprints
@@ -71,7 +79,8 @@ public actor DirectoryScanner {
                         guard stamps[url.path]==stamp,stamp.size>0 else {return Checked(url:url,issue:"正在写入，稍后重试："+url.path,unstable:true)}
                         var media:IndexedMedia?
                         if ImportPlanner.media.contains(url.pathExtension.lowercased()) {
-                            let hash=try await cache.hash(url)
+                            // Hashing would download the whole video; identity still matches it to its lesson.
+                            let hash=CloudFile.isOnlineOnly(url) ? nil : try await cache.hash(url)
                             guard try FileStamp.read(url)==stamp else {return Checked(url:url,issue:"校验期间文件改变："+url.path,unstable:true)}
                             media=IndexedMedia(url:url,identity:stamp.identity,hash:hash)
                         }

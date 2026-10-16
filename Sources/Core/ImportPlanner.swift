@@ -8,6 +8,12 @@ public enum ImportPlanner {
         if values.isUbiquitousItem==true && values.ubiquitousItemDownloadingStatus != .current && values.ubiquitousItemDownloadingStatus != .downloaded {throw Failure("文件尚未下载到本地。请先在 Finder 中下载，再导入或播放。")}
         guard FileManager.default.isReadableFile(atPath:url.path) else{throw Failure("文件无法读取，请重新定位或授权")}
     }
+    /// Videos in a cloud folder may stay online-only until they are played; they must still be readable.
+    public static func requireAvailable(_ url:URL) throws {
+        if CloudFile.isOnlineOnly(url) {
+            guard FileManager.default.isReadableFile(atPath:url.path) else{throw Failure("文件无法读取，请重新定位或授权")}
+        } else { try requireLocal(url) }
+    }
     public static func scan(_ roots:[URL]) throws->[URL] {
         var files:[URL]=[];let keys:Set<URLResourceKey>=[.isDirectoryKey,.isSymbolicLinkKey,.isRegularFileKey,.isHiddenKey]
         for root in roots {

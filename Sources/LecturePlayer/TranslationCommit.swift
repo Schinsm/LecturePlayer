@@ -25,15 +25,20 @@ actor TranslationWriter {
     func enqueueFiles(_ lesson:Lecture,url:URL) {
         pending[url]=lesson
         guard scheduled==nil else{return}
-        scheduled=Task {try? await Task.sleep(for:.seconds(1));if !Task.isCancelled {await self.flushFiles()}}
+        scheduled=Task {try? await Task.sleep(for:.seconds(1));if !Task.isCancelled {await self.flushScheduled()}}
     }
-    func flushFiles() async {
+    /// The debounce task must not cancel itself: flushFiles() cancels `scheduled`, and file writing checks for cancellation.
+    private func flushScheduled() async {scheduled=nil;await flushFiles()}
+    /// Returns what was written, so a caller does not depend on the observer having been registered yet.
+    @discardableResult func flushFiles() async -> [(UUID,TranslationCommit)] {
         scheduled?.cancel();scheduled=nil
         let work=pending;pending=[:]
+        var written:[(UUID,TranslationCommit)]=[]
         for (url,lesson) in work {
-            do {let result=try saveFiles(lesson:lesson,url:url);await fileUpdate?(lesson.id,result)}
+            do {let result=try saveFiles(lesson:lesson,url:url);written.append((lesson.id,result));await fileUpdate?(lesson.id,result)}
             catch {await fileFailure?(lesson.id,error)} // Durable pending status remains; explicit retry only.
         }
+        return written
     }
 
     func saveFiles(lesson:Lecture,url:URL,onlyIfNeeded:Bool=false) throws -> TranslationCommit {

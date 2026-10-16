@@ -241,7 +241,12 @@ struct Keychain {
                 if !stopped && !pauseRequested {fill()}
             }
         }
-        await writer.flushFiles()
+        // Applied here as well as by the store's observer: that observer is registered asynchronously at launch.
+        for (id,saved) in await writer.flushFiles() {
+            if let lesson=store.library.lectures.first(where:{$0.id==id}),lesson.transcriptVersion==saved.transcript.version {
+                store.updateLecture(id){if let files=saved.sidecars {$0.sidecars=files};$0.sidecarStatus=saved.fileStatus;$0.generatedFilePaths=saved.currentFilePaths}
+            }
+        }
         eta=""
         if let source=try? store.repository?.read(lecture,variantID:config.providerID.rawValue),var record=source.task {
             record.completed=record.ids.filter{source.translations[$0] != nil}.count

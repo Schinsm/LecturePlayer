@@ -40,7 +40,7 @@ public enum StorageDiagnostics {
     public static func record(root:URL,operation:Operation,outcome:FileSaveOutcome,bytes:Int=0,count:Int=1,error:Error?=nil) {
         lock.lock();defer{lock.unlock()}
         var entry:[String:Any]=["time":Date().timeIntervalSince1970,"operation":operation.rawValue,"outcome":outcome.rawValue,"bytes":bytes,"count":count]
-        if let error {entry["category"]=StorageIssue(error).kind.rawValue;entry["code"]=(error as NSError).code}
+        if let error {entry["category"]=StorageIssue(error).kind.rawValue;entry["code"]=(error as NSError).code;entry["domain"]=error is CancellationError ? "cancelled" : ["NSPOSIXErrorDomain","NSCocoaErrorDomain","NSURLErrorDomain"].contains((error as NSError).domain) ? (error as NSError).domain : "other"} // Never arbitrary text: custom domains may carry private details.
         do {
             let dir=root.appendingPathComponent("Diagnostics");try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
             let file=dir.appendingPathComponent("storage.jsonl"),old=dir.appendingPathComponent("storage.previous.jsonl")

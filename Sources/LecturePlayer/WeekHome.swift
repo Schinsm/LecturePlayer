@@ -32,6 +32,9 @@ struct WeekHome: View {
     @AppStorage("weekHome.kind") private var kindFilter = ""
     @AppStorage("weekHome.status") private var statusFilter = WeekStatusFilter.all
     @LPState private var chosenWeek: Int??
+    /// This week's videos that are still only in the cloud folder.
+    @LPState private var cloudVideos: [URL] = []
+    @LPState private var prefetching = false
     init(store: AppStore) {
         self.store = store
         navigation = store.navigation; statuses = store.lessonStatuses; analysis = store.analysis
@@ -83,6 +86,8 @@ struct WeekHome: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: week) {
+            prefetching = false
+            cloudVideos = await Self.onlineOnly(current?.lessons ?? [])
             for lesson in current?.lessons ?? [] { await statuses.prepare(lesson, repository: store.repository) }
         }
     }
@@ -97,11 +102,35 @@ struct WeekHome: View {
             Button { step(-1) } label: { Image(systemName: "chevron.right").font(.title3.weight(.semibold)).frame(width: 30, height: 30) }
                 .disabled(index(of: week).map { $0 == 0 } ?? true).help("下一周").accessibilityLabel("下一周")
             Spacer()
+            if !cloudVideos.isEmpty {
+                Button { Task { await prefetch() } } label: {
+                    Label(prefetching ? "正在下载 \(cloudVideos.count) 个视频" : "预下载本周", systemImage: "icloud.and.arrow.down")
+                        .font(.callout).padding(.horizontal, 12).frame(height: 30).glassSurface(Capsule())
+                }
+                .disabled(prefetching)
+                .help("把本周 \(cloudVideos.count) 个只在云端的视频下载到这台 Mac，打开时无需等待")
+            }
             if chosenWeek != nil {
                 Button { chosenWeek = nil } label: { Label("回到最近学习的一周", systemImage: "clock.arrow.circlepath").labelStyle(.iconOnly).frame(width: 30, height: 30) }
                     .help("回到最近学习的一周")
             }
         }.buttonStyle(.plain)
+    }
+    /// Checked off the main thread: one lstat per video, which never downloads anything.
+    static func onlineOnly(_ lessons: [Lecture]) async -> [URL] {
+        let paths = lessons.flatMap { $0.mediaSources.map(\.path) }
+        return await Task.detached(priority: .utility) { paths.map { URL(fileURLWithPath: $0) }.filter(CloudFile.isOnlineOnly) }.value
+    }
+    /// The cloud app keeps downloading in the background; the button disappears when all are local.
+    private func prefetch() async {
+        prefetching = true
+        for url in cloudVideos { CloudFile.requestDownload(url) }
+        while prefetching, !cloudVideos.isEmpty, !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            let remaining = cloudVideos
+            cloudVideos = await Task.detached(priority: .utility) { remaining.filter(CloudFile.isOnlineOnly) }.value
+        }
+        prefetching = false
     }
     private func weekTitle(_ week: Int?) -> String { week.map { "Week \($0)" } ?? "未分周" }
     private func index(of week: Int?) -> Int? { weekNumbers.firstIndex { $0 == week } }
@@ -205,6 +234,7 @@ struct LessonGroupCard: View {
     private var color: Color { store.courseColor(group.courseID).color }
     private var lead: Lecture { group.next ?? group.lessons[0] }
     var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
         Button { store.open(lead.id) } label: {
             VStack(alignment: .leading, spacing: 7) {
                 ZStack(alignment: .top) {
@@ -228,12 +258,14 @@ struct LessonGroupCard: View {
                 }
                 .padding(.top, 10)
                 Text(group.isSeries ? group.title : LessonCatalog.shortTitle(lead)).font(.headline).lineLimit(1).help(lead.title)
-                detail
             }
             .frame(width: 248, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel((group.isSeries ? group.title + "，\(group.lessons.count) 段" : LessonCatalog.displayTitle(lead)) + "，" + progressText)
+        // Outside the open button, so the transcribe action inside it stays clickable.
+        detail.frame(width: 248, alignment: .leading)
+        }
         .contextMenu {
             if group.isSeries {
                 ForEach(group.lessons) { lesson in Button("播放 " + lesson.title) { store.open(lesson.id) } }
@@ -275,9 +307,10 @@ struct LessonGroupCard: View {
     private var detail: some View {
         HStack(spacing: 6) {
             if group.isSeries { SeriesSegments(lessons: group.lessons) }
-            if group.lessons.contains(where: { $0.transcriptVersion == nil }) {
+            if let bare = group.lessons.first(where: { $0.transcriptVersion == nil }) {
                 Text("无字幕").font(.caption2.weight(.semibold)).foregroundStyle(CourseColor.orange.color)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(CourseColor.orange.color.opacity(0.18), in: Capsule())
+                TranscribeControl(store: store, lessonID: bare.id, compact: true)
             } else if group.lessons.contains(where: { statuses.analysis($0, job: analysis)?.complete != true }) && statuses.analysisLoaded {
                 Text("未生成章节").font(.caption2.weight(.semibold)).foregroundStyle(CourseColor.purple.color)
                     .padding(.horizontal, 6).padding(.vertical, 2).background(CourseColor.purple.color.opacity(0.18), in: Capsule())

@@ -5,16 +5,20 @@ import Core
 /// Which follow-up steps one import row will get under "导入后自动处理".
 /// Step selection lives in Settings; the import sheet only switches the whole pipeline on or off.
 struct ImportStepPlan: Equatable {
-    enum Step: String { case translate = "翻译", chapters = "生成章节" }
+    enum Step: String { case transcribe = "本机转写", translate = "翻译", chapters = "生成章节" }
     enum Availability: Equatable { case disabled, unavailable(String), ready }
     var steps: [Step]
     var note: String
     static let translateKey = "importAutoTranslate"
     static let chaptersKey = "importAutoAnalyze"
-    static func make(existing: Bool, hasSubtitle: Bool, translation: Availability, chapters: Availability) -> ImportStepPlan {
+    static let transcribeKey = "importAutoTranscribe"
+    static func make(existing: Bool, hasSubtitle: Bool, translation: Availability, chapters: Availability, transcription: Availability = .disabled) -> ImportStepPlan {
         if existing { return ImportStepPlan(steps: [], note: "关联原课件，不重新处理") }
-        if !hasSubtitle { return ImportStepPlan(steps: [], note: "没有字幕，只导入；之后可在课件中添加字幕") }
         var steps: [Step] = [], skipped: [String] = []
+        if !hasSubtitle {
+            guard transcription == .ready else { return ImportStepPlan(steps: [], note: "没有字幕，只导入；之后可在课件中转写或添加字幕") }
+            steps.append(.transcribe)
+        }
         for (step, availability) in [(Step.translate, translation), (.chapters, chapters)] {
             switch availability {
             case .ready: steps.append(step)
@@ -23,6 +27,8 @@ struct ImportStepPlan: Equatable {
             }
         }
         if steps.isEmpty && skipped.isEmpty { return ImportStepPlan(steps: [], note: "设置中未选择处理步骤，只导入") }
+        // Paid steps after a transcription are priced on the text it produces.
+        if steps.first == .transcribe && steps.count > 1 { skipped.append("费用按转写后的字数计") }
         return ImportStepPlan(steps: steps, note: skipped.joined(separator: "；"))
     }
     var label: String { steps.isEmpty ? note : steps.map(\.rawValue).joined(separator: " → ") + (note.isEmpty ? "" : "（" + note + "）") }

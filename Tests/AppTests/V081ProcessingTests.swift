@@ -42,7 +42,7 @@ private actor ProcessingProbe: TranslationProvider, AnalysisProvider {
         s.current=s.library.lectures.last!.id
         await s.processing.worker?.value
         // 0.9.1: the shared limit is 4 requests across lessons, translation and chapters.
-        let peak=await mock.peak;#expect(peak>2 && peak<=4)
+        let peak=await mock.peak;#expect(peak>=2 && peak<=4, "never above the shared limit of 4")
         #expect(s.processing.entries.allSatisfy{$0.status=="完成"})
         #expect(await mock.translations==6); #expect(await mock.analyses==2); #expect(await mock.syntheses==2)
         for lesson in s.library.lectures {

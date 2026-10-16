@@ -158,6 +158,8 @@ struct LessonWorkStatus:View {
     private var chaptersDone:Bool {availability.state == .completed}
     var body:some View {
         VStack(alignment:.leading,spacing:5) {
+            if lesson.transcriptVersion == nil {TranscribeControl(store:store,lessonID:lesson.id,compact:true)}
+            else if let source=lesson.transcriptSource {Label(source.rawValue,systemImage:"waveform").font(.caption).foregroundStyle(.secondary).help("英文字幕由\(source.rawValue)生成")}
             HStack(spacing:10) {
                 if translationDone {
                     Image(systemName:"character.bubble").foregroundStyle(.secondary).help("翻译完成").accessibilityLabel("翻译完成")

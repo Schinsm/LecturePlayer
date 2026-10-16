@@ -53,17 +53,24 @@ extension AppStore {
         defer { for url in scoped { url.stopAccessingSecurityScopedResource() } }
         guard Set(originalURLs).count == originalURLs.count else { throw Failure("两路视角不能使用同一文件") }
         importStatus="检查文件 · "+row.title
+        if managed {
+            // Copying into the library needs the content: fetch online-only videos first, with progress.
+            for url in originalURLs where CloudFile.isOnlineOnly(url) {
+                let name = url.lastPathComponent
+                try await CloudFile.download(url) { value in Task { @MainActor [weak self] in self?.importStatus = "从云端下载 \(Int(value * 100))% · " + name } }
+            }
+        }
         let initialStamps = try await verifyStable(originalURLs + (row.subtitle.map { [$0] } ?? []))
         var media: [MediaSource] = []
         for (i, url) in originalURLs.enumerated() {
-            try ImportPlanner.requireLocal(url)
+            try ImportPlanner.requireAvailable(url)
             let identity = try Self.fileIdentity(url)
             guard !library.lectures.contains(where: { $0.mediaSources.contains(where: { $0.identity == identity }) }) else { throw Failure("此视频已经导入，请使用已有条目或合并") }
             let credential = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
             media.append(MediaSource(role: i == 0 ? row.role : (row.role == .screen ? .camera : .screen), path: url.path, bookmark: credential, identity: identity))
         }
         importStatus="内容校验 · "+row.title
-        if !managed {for i in media.indices {media[i].contentHash = try await fingerprints.hash(originalURLs[i])}}
+        if !managed {for i in media.indices where !CloudFile.isOnlineOnly(originalURLs[i]) {media[i].contentHash = try await fingerprints.hash(originalURLs[i])}}
         var lesson = Lecture(title: row.title, courseID: courseID, folderID: selectedFolder, url: row.video, bookmark: nil, identity: media[0].identity)
         lesson.subtitlePath = row.subtitle?.path; lesson.week = row.week; lesson.sessionType = row.sessionType; lesson.topic = row.topic; lesson.customTitle = row.customTitle
         lesson.state.speed = UserDefaults.standard.double(forKey: "defaultSpeed") == 0 ? 1 : UserDefaults.standard.double(forKey: "defaultSpeed")

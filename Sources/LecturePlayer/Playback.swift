@@ -84,6 +84,8 @@ import Core
     @Published private(set) var missing: Set<UUID> = [] {didSet {publishVideoPresentation()}}
     @Published private(set) var audioID: UUID?
     @Published private(set) var waiting = false
+    /// Download progress while an online-only video is fetched from a cloud folder before playing.
+    @Published private(set) var cloudDownload: Double?
     @Published private(set) var naturallyEnded = false
     var completionChanged:((UUID,Bool)->Void)?
     var shouldContinueOnSwitch:Bool {intentPlaying || naturallyEnded}
@@ -131,6 +133,16 @@ import Core
             guard let self else { return }
             for source in self.views {
                 do {
+                    // AVFoundation cannot stream a cloud placeholder; fetch it first, with progress.
+                    let file = URL(fileURLWithPath: source.path)
+                    if CloudFile.isOnlineOnly(file) {
+                        self.cloudDownload = 0
+                        defer { if self.generation == token { self.cloudDownload = nil } }
+                        try await CloudFile.download(file) { value in
+                            Task { @MainActor [weak self] in if self?.generation == token, self?.cloudDownload != nil { self?.cloudDownload = value } }
+                        }
+                        guard self.generation == token, !Task.isCancelled else { return }
+                    }
                     let prepared = try await MediaPreparation.load(source, timeout: self.commandTimeout)
                     guard self.generation == token, !Task.isCancelled else { prepared.lease.release(); return }
                     self.mediaLeases.append(prepared.lease)
@@ -326,8 +338,14 @@ import Core
         }
     }
     func persist() { guard ready, let id = lectureID else { return }; let seconds = pendingSeek ?? (playing ? (clock.latest(clockID) ?? position) : actualPosition); guard seconds.isFinite else { return }; lastSave=Date();if let old=lastPersisted,old.0==id,abs(old.1-seconds)<0.001,old.2==duration{return};save?(id,max(0,seconds),duration);lastPersisted=(id,seconds,duration) }
+    /// Stops waiting for a cloud download; the lesson stays closed until the user retries.
+    func cancelCloudDownload() {
+        guard cloudDownload != nil else { return }
+        loadTask?.cancel(); loadTask = nil; generation = UUID(); cloudDownload = nil; intentPlaying = false
+        phase = .failed; error = "已取消下载。视频仍在云端，可以稍后重试载入。"
+    }
     func close() {
-        waitingStarted=nil;beforeStart=[];error=nil;clock.detach(); correctionTask?.cancel(); correctionTask = nil; followerFailures.removeAll(); driftPolicy.reset(); phase = .idle
+        cloudDownload=nil;waitingStarted=nil;beforeStart=[];error=nil;clock.detach(); correctionTask?.cancel(); correctionTask = nil; followerFailures.removeAll(); driftPolicy.reset(); phase = .idle
         sizeObservers.removeAll(); displaySizes.removeAll()
         for (id, output) in firstFrameOutputs { firstFrameItems[id]?.remove(output) }
         firstFrameOutputs.removeAll(); firstFrameItems.removeAll(); displayedFrames.removeAll(); frameRecoveries.removeAll(); automaticFrameRecoveries.removeAll()

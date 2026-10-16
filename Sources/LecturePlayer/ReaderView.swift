@@ -55,6 +55,12 @@ struct PlaybackHeader: View {
             LayoutMenu(store:store,playback:store.playback,columns:store.readingColumns)
             Menu {
                 Button("本课文件…") { files=true }
+                if let lesson = store.lecture, lesson.transcriptVersion == nil {
+                    if store.transcription.available {
+                        Button("转写本课") { store.transcription.enqueue([lesson.id], store: store) }.disabled(store.transcription.isQueued(lesson.id))
+                    }
+                    if TranscriptionSupport.macWhisper != nil { Button("用 MacWhisper 打开…") { store.openInMacWhisper(lesson.id) } }
+                }
                 Button("添加或更换英文字幕…") {store.replaceSubtitle()}.disabled(store.translation.busy)
                 Menu("导出") {
                     Button("导出本课资料包…") {store.exportStudyPackage()}
@@ -156,6 +162,7 @@ struct VideoPane: View {
                         .padding(.bottom, controlsShown ? 96 : 0)
                 }
                 // Controls float over the video and fade out during playback when the pointer rests.
+                .overlay { if let value = playback.cloudDownload { CloudDownloadCard(value: value) { playback.cancelCloudDownload() } } }
                 .overlay(PointerActivity { revealControls() })
                 .overlay(alignment: .bottom) {
                     controls
@@ -313,7 +320,12 @@ struct ReaderPane: View {
                             Text("TXT 资料 · 无时间戳，无法同步").foregroundStyle(.secondary)
                             Text(plain).font(.system(size: fontSize)).lineSpacing(spacing).textSelection(.enabled)
                         }
-                        if store.transcript == nil { Text("暂无转写。通过“资料”补充字幕。").foregroundStyle(.secondary) }
+                        if store.transcript == nil, let id = store.current {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("本课还没有英文字幕。").foregroundStyle(.secondary)
+                                TranscribeControl(store: store, lessonID: id)
+                            }
+                        }
                         readingRows
                     }.scrollTargetLayout().padding(.trailing, 12)
                 }.onChange(of:scrollID) {_,id in if let id {
@@ -493,5 +505,24 @@ private struct PlaybackPositionSlider: View {
     var body: some View {
         Slider(value: Binding(get: {clock.snapshot.seconds}, set: {playback.seek($0)}),in:0...max(1,playback.duration))
             .disabled(!playback.ready).accessibilityLabel("播放位置")
+    }
+}
+
+/// Shown over the video while an online-only lesson is fetched from the cloud folder.
+struct CloudDownloadCard: View {
+    let value: Double
+    let cancel: () -> Void
+    var body: some View {
+        VStack(spacing: 10) {
+            Label("正在从云端下载", systemImage: "icloud.and.arrow.down").font(.callout.weight(.medium))
+            ProgressView(value: value).frame(width: 220)
+            HStack {
+                Text("\(Int(value * 100))%").monospacedDigit().foregroundStyle(.secondary)
+                Spacer()
+                Button("取消", action: cancel).buttonStyle(.borderless)
+            }.font(.caption).frame(width: 220)
+        }
+        .padding(18).glassSurface(RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain).accessibilityLabel("正在从云端下载 \(Int(value * 100))%")
     }
 }

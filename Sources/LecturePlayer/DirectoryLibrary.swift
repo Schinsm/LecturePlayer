@@ -16,10 +16,10 @@ extension AppStore {
     func attachSecond(_ id: UUID, url: URL) async throws {
         guard let item = library.lectures.first(where: { $0.id == id }), item.mediaSources.count == 1 else { throw Failure("一堂课最多两路视频") }
         let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        try ImportPlanner.requireLocal(url); let stamps = try await verifyStable([url]); let identity = try Self.fileIdentity(url)
+        try ImportPlanner.requireAvailable(url); let stamps = try await verifyStable([url]); let identity = try Self.fileIdentity(url)
         guard !library.lectures.contains(where: { $0.mediaSources.contains { $0.identity == identity } }) else { throw Failure("视频已关联课件，请使用合并功能") }
         var source = MediaSource(role: item.mediaSources[0].role == .screen ? .camera : .screen, path: url.path, bookmark: try url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil), identity: identity)
-        source.contentHash = try await fingerprints.hash(url)
+        source.contentHash = CloudFile.isOnlineOnly(url) ? nil : try await fingerprints.hash(url)
         try verifyUnchanged(stamps)
         let active = current == id; if active { playback.persist() }
         guard let index = library.lectures.firstIndex(where: { $0.id == id }), library.lectures[index].mediaSources.count == 1 else { throw Failure("课件已改变，请重试") }
@@ -48,6 +48,7 @@ extension AppStore {
             defer {
                 PerformanceTrace.record("directory.refresh",Date().timeIntervalSince(scanStarted))
                 scanning = false; scanTask = nil
+                if watchesEnabled { adoptNewSubtitles() }
                 if watchesEnabled && !rescanRequested { UserDefaults.standard.set(scanSummary,forKey:refreshPreferenceKey+"-result") }
                 if rescanRequested { rescanRequested = false; refreshDirectory() }
             }
@@ -64,7 +65,7 @@ extension AppStore {
                     for j in sources.indices {
                         if let match = DirectoryIndex.match(sources[j], files: result.media) {
                             let moved=sources[j].path != match.url.path || sources[j].identity != match.identity
-                            sources[j].path = match.url.path; sources[j].identity = match.identity; sources[j].contentHash = match.hash
+                            sources[j].path = match.url.path; sources[j].identity = match.identity; sources[j].contentHash = match.hash ?? sources[j].contentHash
                             if moved || sources[j].bookmark == nil {sources[j].bookmark = try match.url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)}
                         }
                     }

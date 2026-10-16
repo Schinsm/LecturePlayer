@@ -243,6 +243,10 @@ struct ImportView: View {
     @LPState private var costExpanded=true
     @AppStorage(ImportStepPlan.translateKey) private var translateStep=true
     @AppStorage(ImportStepPlan.chaptersKey) private var chaptersStep=true
+    @AppStorage(ImportStepPlan.transcribeKey) private var transcribeStep=true
+    private var transcriptionAvailability:ImportStepPlan.Availability {
+        !transcribeStep ? .disabled : store.transcription.available ? .ready : .unavailable("需要 macOS 26")
+    }
     @LPState private var analysisPreviews:[ImportAnalysisPreview]=[]
     @LPState private var previews:[ImportTranslationPreview]=[]
     @LPState private var previewError=""
@@ -272,7 +276,7 @@ struct ImportView: View {
     private func stepPlan(_ row:ImportRow)->ImportStepPlan {
         let hasPreview=previews.contains {$0.rowID==row.id}
         return ImportStepPlan.make(existing:row.existingID != nil,hasSubtitle:row.subtitle != nil && hasPreview,
-            translation:translationAvailability,chapters:chaptersAvailability)
+            translation:translationAvailability,chapters:chaptersAvailability,transcription:row.subtitle == nil ? transcriptionAvailability : .disabled)
     }
     private var autoTranslate:Bool {autoProcess && translationAvailability == .ready && !previews.isEmpty}
     private var autoAnalyze:Bool {autoProcess && chaptersAvailability == .ready && !analysisPreviews.isEmpty}
@@ -430,6 +434,9 @@ struct ImportView: View {
                         if preview != nil || analysis != nil {
                             let task=preview.map {TranslationTaskState(transcript:$0.transcript,ids:$0.transcript.cues.map(\.id),config:$0.config)}
                             try store.processing.launch([ImportProcessingEntry(id:id,translation:task,analysis:analysis?.task)],store:store,deferIfPaused:true)
+                        } else if row.subtitle == nil && autoProcess && transcriptionAvailability == .ready {
+                            // No subtitles: transcribe on this Mac, then translate and chapter as set in Settings.
+                            store.transcription.enqueue([id],store:store,thenProcess:!otherWorkRunning)
                         }
                     }
                     rows.removeAll{$0.id==row.id}

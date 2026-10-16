@@ -4,9 +4,9 @@
 
 A native macOS lecture player with synchronized dual video, bilingual captions, searchable transcripts, and chapters.
 
-**0.9.1（构建 34）** · [已发布版本](https://github.com/Schinsm/LecturePlayer/releases)
+**0.9.2（构建 35）** · [已发布版本](https://github.com/Schinsm/LecturePlayer/releases)
 
-本版稳定章节跟随位置、精简主页和课程页，翻译与章节生成提速，已完成实际界面验收。
+本版新增本机转写（没有字幕的课件可在这台 Mac 上生成英文字幕），并支持放在 Google 云端硬盘等云盘文件夹中、尚未下载的课程视频。
 
 ## 功能
 
@@ -15,12 +15,14 @@ A native macOS lecture player with synchronized dual video, bilingual captions, 
 - 按周浏览全部课程，可按课程、类型和学习状态筛选；同一系列的多段视频叠成一项。
 - 视频、章节、转写三栏并排，可分别收起和调整宽度；章节与转写独立跟随播放，共用一个搜索框。
 - 课程播放列表，以及跨视频记忆的字幕设置。
+- 没有字幕的课件可在本机转写为英文字幕（macOS 26 起），也可用 MacWhisper 转写后自动关联。
+- 课程目录可以放在 Google 云端硬盘等云盘文件夹中：只在云端的视频打开时下载，主页可预下载本周视频。
 
 ## 安装
 
 需要 **Apple Silicon Mac、macOS 14 或更新版本**。
 
-打开 `LecturePlayer-0.9.1.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
+打开 `LecturePlayer-0.9.2.zip`，解压后将应用拖入 Applications。更新时先退出正在运行的旧版。
 
 应用尚未完成 Apple 公证。首次打开如被系统拦截，可在“系统设置 → 隐私与安全性”中允许打开。同名 `.sha256` 文件用于核对下载完整性。
 

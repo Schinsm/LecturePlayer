@@ -14,6 +14,12 @@ public struct GeneratedFileRecord: Codable, Equatable, Sendable, Identifiable {
 /// Journal is written before replacing output. It survives a later transcript/metadata commit failure.
 public enum GeneratedFiles {
     public static let marker=".lectureplayer-exports"
+    /// Two writers may create the export folder at the same moment; the one that loses the race finds the marker present.
+    public static func ensureMarker(_ url:URL) throws {
+        guard !FileManager.default.fileExists(atPath:url.path) else{return}
+        do {try Data("LecturePlayer exports v1\n".utf8).write(to:url,options:.withoutOverwriting)}
+        catch where FileManager.default.fileExists(atPath:url.path) {}
+    }
     private struct Intent:Codable {let record:GeneratedFileRecord;let previous:String?}
     public static func legacyFiles(_ files:[String:String],lessonID:UUID,version:String,serviceID:String)->[String:String] {
         let prefix=".lectureplayer-\(lessonID.uuidString.prefix(8))-\(version.prefix(8)).".lowercased()
@@ -40,7 +46,7 @@ public enum GeneratedFiles {
         }
         try fm.createDirectory(at:base,withIntermediateDirectories:true)
         let markerURL=base.appendingPathComponent(marker)
-        if !fm.fileExists(atPath:markerURL.path) {try Data("LecturePlayer exports v1\n".utf8).write(to:markerURL,options:.withoutOverwriting)}
+        try GeneratedFiles.ensureMarker(markerURL)
         let safe=String(lesson.title.map {"/:\\\n\r".contains($0) ? "_":$0}.prefix(70))
         let defaultFolder=base.appendingPathComponent("\(safe)-\(lesson.id.uuidString.prefix(8))-\(t.version.prefix(12))",isDirectory:true)
         let journal=journalRoot ?? base.appendingPathComponent(".write-intents",isDirectory:true)

@@ -40,6 +40,7 @@ struct PreferencesView: View {
     @AppStorage("appearance") private var appearance = "系统"
     @AppStorage(ImportStepPlan.translateKey) private var importTranslate = true
     @AppStorage(ImportStepPlan.chaptersKey) private var importChapters = true
+    @AppStorage(ImportStepPlan.transcribeKey) private var importTranscribe = true
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     private let refreshCredentials: Bool
@@ -107,6 +108,7 @@ struct PreferencesView: View {
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 Section("导入后自动处理") {
+                    if TranscriptionSupport.onDevice { Toggle("没有字幕时在本机转写", isOn: $importTranscribe) }
                     Toggle("翻译未译内容（使用所选翻译服务）", isOn: $importTranslate)
                     Toggle("生成章节与知识点", isOn: $importChapters)
                     Text("在导入页打开“导入后自动处理”时，按这里选择的步骤排队执行；需要付费的步骤会先显示预计费用。").font(.caption).foregroundStyle(.secondary)
@@ -142,6 +144,7 @@ private struct PlaybackPreferenceSections: View {
     @AppStorage("lineSpacing") private var spacing = 5.0
     @AppStorage("fontSize") private var font = 17.0
     @AppStorage("hideSpeakerLabels") private var hideSpeakers = true
+    @AppStorage(TranscriptionSupport.localeKey) private var transcriptionLocale = "en-AU"
     var body: some View {
         Section("播放") {
             Toggle("继续播放前回退 3 秒", isOn: $rewind)
@@ -154,6 +157,16 @@ private struct PlaybackPreferenceSections: View {
             preferenceSlider("行距", value: $spacing, range: 0...16, display: "\(Int(spacing))")
             Toggle("隐藏说话人编号", isOn: $hideSpeakers)
             Text("Lecture Capture 录像默认字幕延后 14 秒（片头版权声明），可在字幕同步校准中修改。").font(.caption).foregroundStyle(.secondary)
+        }
+        Section("自动转写") {
+            if TranscriptionSupport.onDevice {
+                Picker("语音语言", selection: $transcriptionLocale) {
+                    Text("英语（澳大利亚）").tag("en-AU"); Text("英语（美国）").tag("en-US"); Text("英语（英国）").tag("en-GB")
+                }
+                Text("没有字幕的课件可在本机转写成英文字幕，不收费；结果保存在课程文件夹的 LecturePlayer 目录。专业术语可能有误，需要更高准确度时可改用 MacWhisper。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("本机转写需要 macOS 26 或更新版本。可在播放页“更多”菜单中用 MacWhisper 转写。").font(.caption).foregroundStyle(.secondary)
+            }
         }
         GlobalCaptionSettings(store: store)
     }
